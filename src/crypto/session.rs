@@ -173,7 +173,7 @@ impl SessionManager {
         self.sessions.contains_key(username)
     }
 
-    fn derive_message_key(&self, chain_key: &[u8], message_number: u32) -> Result<Zeroizing<Vec<u8>>> {
+    fn derive_message_key_static(chain_key: &[u8], message_number: u32) -> Result<Zeroizing<Vec<u8>>> {
         let mut mac = <Hmac::<Sha256> as HmacMac>::new_from_slice(chain_key)
             .map_err(|e| anyhow!("HMAC creation failed: {}", e))?;
         mac.update(&message_number.to_be_bytes());
@@ -183,7 +183,7 @@ impl SessionManager {
         Ok(Zeroizing::new(result.into_bytes().to_vec()))
     }
 
-    fn advance_chain_key(&self, chain_key: &[u8]) -> Result<Vec<u8>> {
+    fn advance_chain_key_static(chain_key: &[u8]) -> Result<Vec<u8>> {
         let mut mac = <Hmac::<Sha256> as HmacMac>::new_from_slice(chain_key)
             .map_err(|e| anyhow!("HMAC creation failed: {}", e))?;
         mac.update(b"MigChat-ChainKeyAdvance");
@@ -199,14 +199,18 @@ impl SessionManager {
         our_identity_key: &KeyPair,
         their_identity_key: &[u8],
     ) -> Result<EncryptedMessage> {
-        let session = self
-            .sessions
-            .get_mut(username)
-            .ok_or_else(|| anyhow!("No session found for {}", username))?;
+        // Extract data needed before getting mutable borrow
+        let (chain_key_str, message_number) = {
+            let session = self
+                .sessions
+                .get(username)
+                .ok_or_else(|| anyhow!("No session found for {}", username))?;
+            (session.session_keys.chain_key.clone(), session.session_keys.message_number)
+        };
 
         // Derive message key from chain key
-        let chain_key = BASE64.decode(&session.session_keys.chain_key)?;
-        let message_key = self.derive_message_key(&chain_key, session.session_keys.message_number)?;
+        let chain_key = BASE64.decode(&chain_key_str)?;
+        let message_key = Self::derive_message_key_static(&chain_key, message_number)?;
 
         // Encrypt message
         let cipher = ChaCha20Poly1305::new_from_slice(&message_key[..32])
@@ -231,8 +235,9 @@ impl SessionManager {
         mac.update(their_identity_key);
         let mac_result = mac.finalize();
 
-        // Advance chain key
-        let new_chain_key = self.advance_chain_key(&chain_key)?;
+        // Advance chain key and update session
+        let new_chain_key = Self::advance_chain_key_static(&chain_key)?;
+        let session = self.sessions.get_mut(username).unwrap();
         session.session_keys.chain_key = BASE64.encode(&new_chain_key);
         session.session_keys.message_number += 1;
 
@@ -254,10 +259,14 @@ impl SessionManager {
         encrypted_msg: &EncryptedMessage,
         our_identity_key: &KeyPair,
     ) -> Result<String> {
-        let session = self
-            .sessions
-            .get_mut(username)
-            .ok_or_else(|| anyhow!("No session found for {}", username))?;
+        // Extract data needed before getting mutable borrow
+        let (chain_key_str, message_number) = {
+            let session = self
+                .sessions
+                .get(username)
+                .ok_or_else(|| anyhow!("No session found for {}", username))?;
+            (session.session_keys.chain_key.clone(), session.session_keys.message_number)
+        };
 
         // Verify MAC
         let ciphertext = BASE64.decode(&encrypted_msg.ciphertext)?;
@@ -266,8 +275,8 @@ impl SessionManager {
         let mac_bytes = BASE64.decode(&encrypted_msg.mac)?;
 
         // Derive message key
-        let chain_key = BASE64.decode(&session.session_keys.chain_key)?;
-        let message_key = self.derive_message_key(&chain_key, session.session_keys.message_number)?;
+        let chain_key = BASE64.decode(&chain_key_str)?;
+        let message_key = Self::derive_message_key_static(&chain_key, message_number)?;
 
         // Verify MAC
         let mut mac = <Hmac::<Sha256> as HmacMac>::new_from_slice(&message_key[..32])
@@ -292,8 +301,9 @@ impl SessionManager {
             .decrypt(nonce, ciphertext.as_slice())
             .map_err(|e| anyhow!("Decryption failed: {}", e))?;
 
-        // Advance chain key
-        let new_chain_key = self.advance_chain_key(&chain_key)?;
+        // Advance chain key and update session
+        let new_chain_key = Self::advance_chain_key_static(&chain_key)?;
+        let session = self.sessions.get_mut(username).unwrap();
         session.session_keys.chain_key = BASE64.encode(&new_chain_key);
         session.session_keys.message_number += 1;
 

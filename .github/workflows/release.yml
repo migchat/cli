@@ -33,6 +33,14 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             name: macos-aarch64
+          # Windows x86_64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            name: windows-x86_64
+          # Windows aarch64
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            name: windows-aarch64
 
     steps:
       - name: Checkout code
@@ -60,14 +68,17 @@ jobs:
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
-      - name: Rename binary
+      - name: Rename binary (Unix)
+        if: runner.os != 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
-          if [ -f migchat-cli ]; then
-            mv migchat-cli migchat-${{ matrix.name }}
-          elif [ -f migchat-cli.exe ]; then
-            mv migchat-cli.exe migchat-${{ matrix.name }}.exe
-          fi
+          mv migchat-cli migchat-${{ matrix.name }}
+
+      - name: Rename binary (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cd target/${{ matrix.target }}/release
+          mv migchat-cli.exe migchat-${{ matrix.name }}.exe
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -118,11 +129,16 @@ jobs:
             curl -fsSL https://raw.githubusercontent.com/migchat/cli/main/install.sh | bash
             ```
 
+            **Quick Install (Windows):**
+            ```powershell
+            irm https://raw.githubusercontent.com/migchat/cli/main/install.ps1 | iex
+            ```
+
             **Manual Installation:**
             1. Download the binary for your platform below
-            2. Rename it to `migchat` (remove platform suffix)
-            3. Make it executable: `chmod +x migchat`
-            4. Move it to a directory in your PATH: `mv migchat ~/.local/bin/`
+            2. Rename it to `migchat` or `migchat.exe` (remove platform suffix)
+            3. (Unix only) Make it executable: `chmod +x migchat`
+            4. Move it to a directory in your PATH
 
             ### Supported Platforms
 
@@ -130,6 +146,8 @@ jobs:
             - Linux aarch64 (ARM64)
             - macOS x86_64 (Intel)
             - macOS aarch64 (Apple Silicon)
+            - Windows x86_64
+            - Windows aarch64 (ARM64)
 
             ### What's Changed
 

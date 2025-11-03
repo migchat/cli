@@ -20,23 +20,42 @@ An interactive command-line client for MigChat server, built with Rust.
 curl -fsSL https://raw.githubusercontent.com/migchat/cli/main/install.sh | bash
 ```
 
-This will:
-- Detect your platform automatically
-- Download the latest release binary
-- Install to `~/.local/bin/migchat`
-- Make it executable
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/migchat/cli/main/install.ps1 | iex
+```
 
-After installation, you may need to add `~/.local/bin` to your PATH:
+The installer will:
+- Detect your platform and architecture automatically
+- Download the latest release binary
+- Install to the appropriate location:
+  - **Unix**: `~/.local/bin/migchat`
+  - **Windows**: `%LOCALAPPDATA%\migchat\bin\migchat.exe`
+- Configure PATH (Windows does this automatically)
+- Make it executable (Unix only)
+
+**Unix PATH Setup:**
+After installation on Linux/macOS, you may need to add `~/.local/bin` to your PATH:
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
+### Supported Platforms
+
+- Linux (x86_64, aarch64)
+- macOS (Intel x86_64, Apple Silicon aarch64)
+- Windows (x86_64, aarch64)
+
 ### Manual Installation
 
 1. Download the binary for your platform from the [latest release](https://github.com/migchat/cli/releases/latest)
-2. Rename it to `migchat` (remove platform suffix)
-3. Make it executable: `chmod +x migchat`
-4. Move it to a directory in your PATH: `mv migchat ~/.local/bin/`
+2. Rename it:
+   - **Unix**: `migchat` (remove platform suffix)
+   - **Windows**: `migchat.exe` (remove platform suffix)
+3. **Unix only**: Make it executable: `chmod +x migchat`
+4. Move it to a directory in your PATH:
+   - **Unix**: `mv migchat ~/.local/bin/`
+   - **Windows**: Move to `%LOCALAPPDATA%\migchat\bin\` and add to PATH
 
 ### From Source
 

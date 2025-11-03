@@ -5,7 +5,8 @@ use chacha20poly1305::{
     ChaCha20Poly1305, Nonce,
 };
 use hkdf::Hkdf;
-use hmac::{Hmac, Mac};
+use hmac::Hmac;
+use hmac::Mac as HmacMac;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -173,7 +174,7 @@ impl SessionManager {
     }
 
     fn derive_message_key(&self, chain_key: &[u8], message_number: u32) -> Result<Zeroizing<Vec<u8>>> {
-        let mut mac = Hmac::<Sha256>::new_from_slice(chain_key)
+        let mut mac = <Hmac::<Sha256> as HmacMac>::new_from_slice(chain_key)
             .map_err(|e| anyhow!("HMAC creation failed: {}", e))?;
         mac.update(&message_number.to_be_bytes());
         mac.update(b"MigChat-MessageKey");
@@ -183,7 +184,7 @@ impl SessionManager {
     }
 
     fn advance_chain_key(&self, chain_key: &[u8]) -> Result<Vec<u8>> {
-        let mut mac = Hmac::<Sha256>::new_from_slice(chain_key)
+        let mut mac = <Hmac::<Sha256> as HmacMac>::new_from_slice(chain_key)
             .map_err(|e| anyhow!("HMAC creation failed: {}", e))?;
         mac.update(b"MigChat-ChainKeyAdvance");
 
@@ -223,7 +224,7 @@ impl SessionManager {
         let ephemeral_key = KeyPair::generate();
 
         // Create MAC
-        let mut mac = Hmac::<Sha256>::new_from_slice(&message_key[..32])
+        let mut mac = <Hmac::<Sha256> as HmacMac>::new_from_slice(&message_key[..32])
             .map_err(|e| anyhow!("HMAC creation failed: {}", e))?;
         mac.update(&ciphertext);
         mac.update(our_identity_key.public_bytes().as_slice());
@@ -269,7 +270,7 @@ impl SessionManager {
         let message_key = self.derive_message_key(&chain_key, session.session_keys.message_number)?;
 
         // Verify MAC
-        let mut mac = Hmac::<Sha256>::new_from_slice(&message_key[..32])
+        let mut mac = <Hmac::<Sha256> as HmacMac>::new_from_slice(&message_key[..32])
             .map_err(|e| anyhow!("HMAC creation failed: {}", e))?;
         mac.update(&ciphertext);
         mac.update(&sender_identity_key);

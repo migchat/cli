@@ -46,7 +46,7 @@ pub struct VerifiedKey {
     pub verified_at: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct KeyPair {
     pub public: PublicKey,
     pub secret: StaticSecret,
@@ -79,7 +79,7 @@ impl KeyPair {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SigningKeyPair {
     pub verifying: VerifyingKey,
     pub signing: SigningKey,

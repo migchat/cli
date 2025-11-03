@@ -239,20 +239,56 @@ impl UI {
     }
 
     fn send_message(&mut self, to_username: Option<String>) -> Result<bool> {
+        self.clear_screen();
+        println!("{}", "═══ Send Message ═══".cyan().bold());
+        println!();
+
+        // Show menu with Send and Cancel options
+        let options = vec!["Send Message", "← Cancel"];
+        let selection = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("What would you like to do?")
+            .items(&options)
+            .default(0)
+            .interact()?;
+
+        if selection == 1 {
+            // Cancel selected
+            return Ok(true);
+        }
+
         println!();
         let to_username: String = match to_username {
             Some(username) => {
                 println!("{}", format!("Replying to: {}", username).cyan().bold());
                 username
             }
-            None => Input::with_theme(&ColorfulTheme::default())
-                .with_prompt("Send to (username)")
-                .interact_text()?,
+            None => {
+                let input: String = Input::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Send to (username)")
+                    .allow_empty(true)
+                    .interact_text()?;
+
+                if input.is_empty() {
+                    println!("{}", "✗ Cancelled".yellow());
+                    println!();
+                    self.wait_for_enter();
+                    return Ok(true);
+                }
+                input
+            }
         };
 
         let content: String = Input::with_theme(&ColorfulTheme::default())
-            .with_prompt("Message")
+            .with_prompt("Message (leave empty to cancel)")
+            .allow_empty(true)
             .interact_text()?;
+
+        if content.is_empty() {
+            println!("{}", "✗ Cancelled".yellow());
+            println!();
+            self.wait_for_enter();
+            return Ok(true);
+        }
 
         println!("\n{}", "Sending message...".yellow());
 
@@ -275,13 +311,33 @@ impl UI {
     }
 
     fn change_username(&mut self) -> Result<bool> {
+        self.clear_screen();
+        println!("{}", "═══ Change Username ═══".cyan().bold());
+        println!();
+        println!("{}", format!("Current username: {}", self.config.get_current_username().unwrap()).bright_black());
+        println!();
+
+        // Show menu with Change and Cancel options
+        let options = vec!["Change Username", "← Cancel"];
+        let selection = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("What would you like to do?")
+            .items(&options)
+            .default(0)
+            .interact()?;
+
+        if selection == 1 {
+            // Cancel selected
+            return Ok(true);
+        }
+
         println!();
         let new_username: String = Input::with_theme(&ColorfulTheme::default())
-            .with_prompt("New username")
+            .with_prompt("New username (leave empty to cancel)")
+            .allow_empty(true)
             .interact_text()?;
 
         if new_username.is_empty() {
-            println!("{}", "✗ Username cannot be empty".red());
+            println!("{}", "✗ Cancelled".yellow());
             println!();
             self.wait_for_enter();
             return Ok(true);

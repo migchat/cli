@@ -2,6 +2,7 @@ use super::models::*;
 use anyhow::{anyhow, Result};
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use crate::api::models::{GetKeysResponse, KeyBundle, UploadKeysRequest, UploadKeysResponse};
 
 pub struct ApiClient {
     base_url: String,
@@ -211,6 +212,59 @@ impl ApiClient {
                 error: format!("HTTP {}", status),
             });
             Err(anyhow!("Failed to get filtered messages: {}", error.error))
+        }
+    }
+
+    // E2E Encryption API methods
+    pub fn upload_keys(&self, token: &str, key_bundle: KeyBundle) -> Result<UploadKeysResponse> {
+        let request = UploadKeysRequest { key_bundle };
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", token))?,
+        );
+
+        let response = self
+            .client
+            .post(format!("{}/api/keys/upload", self.base_url))
+            .headers(headers)
+            .json(&request)
+            .send()?;
+
+        if response.status().is_success() {
+            Ok(response.json()?)
+        } else {
+            let status = response.status();
+            let error: ErrorResponse = response.json().unwrap_or(ErrorResponse {
+                error: format!("HTTP {}", status),
+            });
+            Err(anyhow!("Failed to upload keys: {}", error.error))
+        }
+    }
+
+    pub fn get_keys(&self, token: &str, username: &str) -> Result<GetKeysResponse> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", token))?,
+        );
+
+        let response = self
+            .client
+            .get(format!("{}/api/keys/{}", self.base_url, username))
+            .headers(headers)
+            .send()?;
+
+        if response.status().is_success() {
+            Ok(response.json()?)
+        } else {
+            let status = response.status();
+            let error: ErrorResponse = response.json().unwrap_or(ErrorResponse {
+                error: format!("HTTP {}", status),
+            });
+            Err(anyhow!("Failed to get keys for {}: {}", username, error.error))
         }
     }
 }

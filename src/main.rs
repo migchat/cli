@@ -3,6 +3,7 @@ mod config;
 mod ui;
 mod update;
 mod polling;
+mod crypto;
 
 use anyhow::Result;
 use config::Config;

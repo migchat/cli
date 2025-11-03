@@ -8,14 +8,28 @@ $REPO = "migchat/cli"
 $BINARY_NAME = "migchat"
 $INSTALL_DIR = "$env:LOCALAPPDATA\migchat\bin"
 
-# Colors
+# Colors - Safe for piped execution
 function Write-ColorOutput($ForegroundColor) {
-    $fc = $host.UI.RawUI.ForegroundColor
-    $host.UI.RawUI.ForegroundColor = $ForegroundColor
-    if ($args) {
-        Write-Output $args
+    try {
+        if ($host.UI.SupportsVirtualTerminal -or $host.Name -eq "ConsoleHost") {
+            $fc = $host.UI.RawUI.ForegroundColor
+            $host.UI.RawUI.ForegroundColor = $ForegroundColor
+            if ($args) {
+                Write-Output $args
+            }
+            $host.UI.RawUI.ForegroundColor = $fc
+        } else {
+            # Fallback for piped execution
+            if ($args) {
+                Write-Output $args
+            }
+        }
+    } catch {
+        # Fallback if color output fails
+        if ($args) {
+            Write-Output $args
+        }
     }
-    $host.UI.RawUI.ForegroundColor = $fc
 }
 
 # Detect architecture

@@ -2,6 +2,7 @@
 # Usage: irm https://raw.githubusercontent.com/migchat/cli/main/install.ps1 | iex
 
 $ErrorActionPreference = "Stop"
+$ProgressPreference = 'SilentlyContinue'  # Faster downloads
 
 $REPO = "migchat/cli"
 $BINARY_NAME = "migchat"

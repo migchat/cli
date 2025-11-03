@@ -27,6 +27,9 @@ detect_platform() {
         darwin)
             OS="macos"
             ;;
+        mingw*|msys*|cygwin*)
+            OS="windows"
+            ;;
         *)
             echo -e "${RED}Unsupported operating system: $os${NC}"
             exit 1
@@ -66,7 +69,16 @@ get_latest_version() {
 
 # Download and install binary
 install_binary() {
-    local download_url="https://github.com/${REPO}/releases/download/${LATEST_VERSION}/${BINARY_NAME}-${PLATFORM}"
+    local binary_suffix=""
+    local local_binary="${BINARY_NAME}"
+
+    # Add .exe for Windows
+    if [ "$OS" = "windows" ]; then
+        binary_suffix=".exe"
+        local_binary="${BINARY_NAME}.exe"
+    fi
+
+    local download_url="https://github.com/${REPO}/releases/download/${LATEST_VERSION}/${BINARY_NAME}-${PLATFORM}${binary_suffix}"
 
     echo -e "${CYAN}Downloading ${BINARY_NAME} for ${PLATFORM}...${NC}"
 
@@ -74,9 +86,11 @@ install_binary() {
     mkdir -p "$INSTALL_DIR"
 
     # Download binary
-    if curl -fsSL "$download_url" -o "${INSTALL_DIR}/${BINARY_NAME}"; then
-        chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
-        echo -e "${GREEN}✓ Successfully installed ${BINARY_NAME} to ${INSTALL_DIR}/${BINARY_NAME}${NC}"
+    if curl -fsSL "$download_url" -o "${INSTALL_DIR}/${local_binary}"; then
+        if [ "$OS" != "windows" ]; then
+            chmod +x "${INSTALL_DIR}/${local_binary}"
+        fi
+        echo -e "${GREEN}✓ Successfully installed ${local_binary} to ${INSTALL_DIR}/${local_binary}${NC}"
     else
         echo -e "${RED}✗ Failed to download binary${NC}"
         echo -e "${YELLOW}URL attempted: ${download_url}${NC}"

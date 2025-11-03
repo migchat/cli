@@ -13,6 +13,31 @@ An interactive command-line client for MigChat server, built with Rust.
 
 ## Installation
 
+### Quick Install (Recommended)
+
+**Linux / macOS:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/migchat/cli/main/install.sh | bash
+```
+
+This will:
+- Detect your platform automatically
+- Download the latest release binary
+- Install to `~/.local/bin/migchat`
+- Make it executable
+
+After installation, you may need to add `~/.local/bin` to your PATH:
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+### Manual Installation
+
+1. Download the binary for your platform from the [latest release](https://github.com/migchat/cli/releases/latest)
+2. Rename it to `migchat` (remove platform suffix)
+3. Make it executable: `chmod +x migchat`
+4. Move it to a directory in your PATH: `mv migchat ~/.local/bin/`
+
 ### From Source
 
 1. **Install Rust** (if not already installed):
@@ -42,7 +67,10 @@ cargo run
 ### Starting the CLI
 
 ```bash
-# If installed globally
+# If installed via script or manually
+migchat
+
+# If installed via cargo
 migchat-cli
 
 # Or run from source

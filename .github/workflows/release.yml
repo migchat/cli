@@ -1,0 +1,138 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v0.1.0)'
+        required: true
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          # Linux x86_64
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            name: linux-x86_64
+          # Linux aarch64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            name: linux-aarch64
+          # macOS x86_64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            name: macos-x86_64
+          # macOS ARM64
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            name: macos-aarch64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          target: ${{ matrix.target }}
+          override: true
+
+      - name: Install cross-compilation tools (Linux aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+      - name: Rename binary
+        run: |
+          cd target/${{ matrix.target }}/release
+          if [ -f migchat-cli ]; then
+            mv migchat-cli migchat-${{ matrix.name }}
+          elif [ -f migchat-cli.exe ]; then
+            mv migchat-cli.exe migchat-${{ matrix.name }}.exe
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: migchat-${{ matrix.name }}
+          path: target/${{ matrix.target }}/release/migchat-${{ matrix.name }}*
+
+  create-release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -R ./artifacts
+
+      - name: Get version
+        id: get_version
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.get_version.outputs.VERSION }}
+          name: Release ${{ steps.get_version.outputs.VERSION }}
+          draft: false
+          prerelease: false
+          files: ./artifacts/**/*
+          body: |
+            ## MigChat CLI ${{ steps.get_version.outputs.VERSION }}
+
+            ### Installation
+
+            **Quick Install (Linux/macOS):**
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/migchat/cli/main/install.sh | bash
+            ```
+
+            **Manual Installation:**
+            1. Download the binary for your platform below
+            2. Rename it to `migchat` (remove platform suffix)
+            3. Make it executable: `chmod +x migchat`
+            4. Move it to a directory in your PATH: `mv migchat ~/.local/bin/`
+
+            ### Supported Platforms
+
+            - Linux x86_64
+            - Linux aarch64 (ARM64)
+            - macOS x86_64 (Intel)
+            - macOS aarch64 (Apple Silicon)
+
+            ### What's Changed
+
+            See commit history for details.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

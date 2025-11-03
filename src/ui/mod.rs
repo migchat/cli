@@ -1,5 +1,7 @@
 use crate::api::{ApiClient, MessageResponse};
-use crate::config::Config;
+use crate::config::{Account, Config};
+use crate::polling::MessagePoller;
+use crate::update;
 use anyhow::Result;
 use chrono::Local;
 use colored::*;
@@ -8,17 +10,64 @@ use dialoguer::{theme::ColorfulTheme, Input, Password, Select};
 pub struct UI {
     api: ApiClient,
     config: Config,
+    update_available: Option<String>,
+    poller: Option<MessagePoller>,
 }
 
 impl UI {
     pub fn new(config: Config) -> Self {
         let api = ApiClient::new(config.server_url.clone());
-        Self { api, config }
+        Self {
+            api,
+            config,
+            update_available: None,
+            poller: None,
+        }
+    }
+
+    fn start_polling(&mut self) {
+        if self.config.is_logged_in() {
+            let poller = MessagePoller::new();
+            let server_url = self.config.server_url.clone();
+            let token = self.config.get_current_token().unwrap().clone();
+            let username = self.config.get_current_username().unwrap().clone();
+
+            poller.start(server_url, token, username);
+            self.poller = Some(poller);
+        }
+    }
+
+    fn stop_polling(&mut self) {
+        if let Some(poller) = self.poller.take() {
+            poller.stop();
+        }
     }
 
     pub fn run(&mut self) -> Result<()> {
         self.clear_screen();
         self.print_banner();
+
+        // Check for updates
+        match update::check_for_updates() {
+            Ok(Some(version)) => {
+                self.update_available = Some(version.clone());
+                println!(
+                    "{}",
+                    format!(
+                        "⚠ Update available: v{} (current: v{})",
+                        version,
+                        update::get_current_version()
+                    )
+                    .yellow()
+                    .bold()
+                );
+                println!();
+            }
+            Ok(None) => {}
+            Err(_) => {
+                // Silently ignore update check errors
+            }
+        }
 
         // Check server health
         match self.api.health_check() {
@@ -37,12 +86,17 @@ impl UI {
                 if !self.show_auth_menu()? {
                     break;
                 }
+                // Start polling after login
+                self.start_polling();
             } else {
                 if !self.show_main_menu()? {
                     break;
                 }
             }
         }
+
+        // Stop polling when exiting
+        self.stop_polling();
 
         Ok(())
     }
@@ -104,14 +158,25 @@ impl UI {
         println!("{}", format!("Logged in as: {}", self.config.get_current_username().unwrap()).cyan().bold());
         println!();
 
-        let options = vec![
+        let mut options = vec![
             "View Conversations",
-            "View All Messages",
             "Send Message",
+            "Change Username",
+        ];
+
+        // Add update option if update is available
+        let update_offset = if self.update_available.is_some() {
+            options.push("Update to Latest Version");
+            1
+        } else {
+            0
+        };
+
+        options.extend_from_slice(&[
             "Switch Account",
             "Logout",
             "Exit",
-        ];
+        ]);
 
         let selection = Select::with_theme(&ColorfulTheme::default())
             .with_prompt("Main Menu")
@@ -121,18 +186,24 @@ impl UI {
 
         match selection {
             0 => self.view_conversations(),
-            1 => self.view_messages(),
-            2 => self.send_message(),
-            3 => {
-                self.logout()?;
-                Ok(true)
+            1 => self.send_message(None),
+            2 => self.change_username(),
+            3 if update_offset == 1 => self.perform_update(),
+            _ => {
+                let adjusted = selection - update_offset;
+                match adjusted {
+                    3 => {
+                        self.logout()?;
+                        Ok(true)
+                    }
+                    4 => {
+                        self.logout()?;
+                        Ok(true)
+                    }
+                    5 => Ok(false),
+                    _ => Ok(true),
+                }
             }
-            4 => {
-                self.logout()?;
-                Ok(true)
-            }
-            5 => Ok(false),
-            _ => Ok(true),
         }
     }
 
@@ -167,11 +238,17 @@ impl UI {
         }
     }
 
-    fn send_message(&mut self) -> Result<bool> {
+    fn send_message(&mut self, to_username: Option<String>) -> Result<bool> {
         println!();
-        let to_username: String = Input::with_theme(&ColorfulTheme::default())
-            .with_prompt("Send to (username)")
-            .interact_text()?;
+        let to_username: String = match to_username {
+            Some(username) => {
+                println!("{}", format!("Replying to: {}", username).cyan().bold());
+                username
+            }
+            None => Input::with_theme(&ColorfulTheme::default())
+                .with_prompt("Send to (username)")
+                .interact_text()?,
+        };
 
         let content: String = Input::with_theme(&ColorfulTheme::default())
             .with_prompt("Message")
@@ -197,25 +274,38 @@ impl UI {
         }
     }
 
-    fn view_messages(&mut self) -> Result<bool> {
+    fn change_username(&mut self) -> Result<bool> {
+        println!();
+        let new_username: String = Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("New username")
+            .interact_text()?;
+
+        if new_username.is_empty() {
+            println!("{}", "✗ Username cannot be empty".red());
+            println!();
+            self.wait_for_enter();
+            return Ok(true);
+        }
+
+        println!("\n{}", "Updating username...".yellow());
+
         let token = self.config.get_current_token().unwrap();
 
-        println!("\n{}", "Loading messages...".yellow());
-
-        match self.api.get_messages(token) {
-            Ok(messages) => {
-                self.clear_screen();
-                println!("{}", "═══ All Messages ═══".cyan().bold());
-                println!();
-
-                if messages.is_empty() {
-                    println!("{}", "No messages yet.".yellow());
-                } else {
-                    for msg in messages.iter() {
-                        self.print_message(msg);
-                    }
+        match self.api.update_username(token, new_username.clone()) {
+            Ok(response) => {
+                // Update config with new username
+                let old_username = self.config.get_current_username().unwrap().clone();
+                if let Some(account) = self.config.accounts.remove(&old_username) {
+                    let updated_account = Account {
+                        username: response.username.clone(),
+                        token: account.token,
+                    };
+                    self.config.accounts.insert(response.username.clone(), updated_account);
+                    self.config.current_account = Some(response.username.clone());
+                    self.config.save()?;
                 }
 
+                println!("{}", format!("✓ Username updated to {}!", response.username).green());
                 println!();
                 self.wait_for_enter();
                 Ok(true)
@@ -236,26 +326,114 @@ impl UI {
 
         match self.api.get_conversations(token) {
             Ok(conversations) => {
-                self.clear_screen();
-                println!("{}", "═══ Conversations ═══".cyan().bold());
-                println!();
-
                 if conversations.is_empty() {
+                    self.clear_screen();
+                    println!("{}", "═══ Conversations ═══".cyan().bold());
+                    println!();
                     println!("{}", "No conversations yet.".yellow());
+                    println!();
+                    self.wait_for_enter();
+                    Ok(true)
                 } else {
-                    for conv in conversations.iter() {
-                        let time = conv.last_message_time.with_timezone(&Local);
-                        let time_str = time.format("%Y-%m-%d %H:%M:%S").to_string();
+                    self.clear_screen();
+                    println!("{}", "═══ Conversations ═══".cyan().bold());
+                    println!();
 
-                        println!("{}", format!("┌─ {} {}", conv.username, if conv.unread_count > 0 { format!("({})", conv.unread_count).red().to_string() } else { "".to_string() }).bold());
-                        println!("│  {}", conv.last_message.bright_black());
-                        println!("└─ {}", time_str.bright_black());
-                        println!();
+                    // Create list of conversation labels with unread indicators
+                    let mut options: Vec<String> = conversations
+                        .iter()
+                        .map(|conv| {
+                            if conv.unread_count > 0 {
+                                format!("{} ({} unread)", conv.username, conv.unread_count)
+                            } else {
+                                conv.username.clone()
+                            }
+                        })
+                        .collect();
+                    options.push("← Back".to_string());
+
+                    let selection = Select::with_theme(&ColorfulTheme::default())
+                        .with_prompt("Select a conversation")
+                        .items(&options)
+                        .default(0)
+                        .interact()?;
+
+                    if selection < conversations.len() {
+                        // User selected a conversation
+                        let username = conversations[selection].username.clone();
+                        self.view_conversation_messages(&username)?;
+                    }
+
+                    Ok(true)
+                }
+            }
+            Err(e) => {
+                println!("{}", format!("✗ Error: {}", e).red());
+                println!();
+                self.wait_for_enter();
+                Ok(true)
+            }
+        }
+    }
+
+    fn view_conversation_messages(&mut self, username: &str) -> Result<bool> {
+        let token = self.config.get_current_token().unwrap();
+        let current_user = self.config.get_current_username().unwrap().clone();
+
+        println!("\n{}", "Loading messages...".yellow());
+
+        match self.api.get_messages(token) {
+            Ok(all_messages) => {
+                // Filter messages for this conversation
+                // Note: API returns messages in DESC order (newest first), so we reverse to get chronological order
+                let mut messages: Vec<_> = all_messages
+                    .iter()
+                    .filter(|msg| {
+                        (&msg.from_username == username && &msg.to_username == &current_user)
+                            || (&msg.from_username == &current_user && &msg.to_username == username)
+                    })
+                    .collect();
+                messages.reverse(); // Now oldest to newest (chronological)
+
+                loop {
+                    self.clear_screen();
+                    println!("{}", format!("═══ Conversation with {} ═══", username).cyan().bold());
+                    println!();
+
+                    if messages.is_empty() {
+                        println!("{}", "No messages yet.".yellow());
+                    } else {
+                        // Display messages in chronological order (oldest first, latest at bottom)
+                        for msg in messages.iter() {
+                            self.print_message(msg);
+                        }
+                    }
+
+                    println!();
+
+                    let options = vec!["Reply", "← Back"];
+
+                    let selection = Select::with_theme(&ColorfulTheme::default())
+                        .with_prompt("Actions")
+                        .items(&options)
+                        .default(0)
+                        .interact()?;
+
+                    match selection {
+                        0 => {
+                            // Reply
+                            self.send_message(Some(username.to_string()))?;
+                            // Refresh messages after sending
+                            return self.view_conversation_messages(username);
+                        }
+                        1 => {
+                            // Back
+                            break;
+                        }
+                        _ => break,
                     }
                 }
 
-                println!();
-                self.wait_for_enter();
                 Ok(true)
             }
             Err(e) => {
@@ -268,6 +446,7 @@ impl UI {
     }
 
     fn logout(&mut self) -> Result<()> {
+        self.stop_polling();
         self.config.logout_current();
         self.config.save()?;
         println!("\n{}", "✓ Logged out successfully!".green());
@@ -318,9 +497,10 @@ impl UI {
     }
 
     fn print_banner(&self) {
+        const VERSION: &str = env!("CARGO_PKG_VERSION");
         println!("{}", "╔═══════════════════════════════════╗".cyan());
         println!("{}", "║                                   ║".cyan());
-        println!("{}", "║          MigChat CLI              ║".cyan().bold());
+        println!("{}", format!("║      MigChat CLI v{:<13}  ║", VERSION).cyan().bold());
         println!("{}", "║     Interactive Chat Client       ║".cyan());
         println!("{}", "║                                   ║".cyan());
         println!("{}", "╚═══════════════════════════════════╝".cyan());
@@ -337,5 +517,35 @@ impl UI {
             .allow_empty(true)
             .interact_text()
             .ok();
+    }
+
+    fn perform_update(&mut self) -> Result<bool> {
+        println!();
+        println!(
+            "{}",
+            format!(
+                "Updating from v{} to v{}...",
+                update::get_current_version(),
+                self.update_available.as_ref().unwrap()
+            )
+            .yellow()
+        );
+        println!();
+
+        match update::perform_update() {
+            Ok(_) => {
+                println!("{}", "✓ Update successful! Please restart the application.".green());
+                println!();
+                self.wait_for_enter();
+                // Exit after successful update
+                Ok(false)
+            }
+            Err(e) => {
+                println!("{}", format!("✗ Update failed: {}", e).red());
+                println!();
+                self.wait_for_enter();
+                Ok(true)
+            }
+        }
     }
 }

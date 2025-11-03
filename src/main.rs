@@ -1,6 +1,8 @@
 mod api;
 mod config;
 mod ui;
+mod update;
+mod polling;
 
 use anyhow::Result;
 use config::Config;

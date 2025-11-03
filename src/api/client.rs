@@ -132,4 +132,36 @@ impl ApiClient {
 
         Ok(response.status().is_success())
     }
+
+    pub fn update_username(
+        &self,
+        token: &str,
+        new_username: String,
+    ) -> Result<UpdateUsernameResponse> {
+        let request = UpdateUsernameRequest { new_username };
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", token))?,
+        );
+
+        let response = self
+            .client
+            .post(format!("{}/api/account/update-username", self.base_url))
+            .headers(headers)
+            .json(&request)
+            .send()?;
+
+        if response.status().is_success() {
+            Ok(response.json()?)
+        } else {
+            let status = response.status();
+            let error: ErrorResponse = response.json().unwrap_or(ErrorResponse {
+                error: format!("HTTP {}", status),
+            });
+            Err(anyhow!("Failed to update username: {}", error.error))
+        }
+    }
 }

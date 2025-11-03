@@ -1,27 +1,33 @@
 use crate::api::{ApiClient, MessageResponse};
 use crate::config::{Account, Config};
+use crate::crypto::EncryptionManager;
 use crate::polling::MessagePoller;
 use crate::update;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use chrono::Local;
 use colored::*;
-use dialoguer::{theme::ColorfulTheme, Input, Password, Select};
+use dialoguer::{theme::ColorfulTheme, Confirm, Input, Password, Select};
 
 pub struct UI {
     api: ApiClient,
     config: Config,
     update_available: Option<String>,
     poller: Option<MessagePoller>,
+    encryption: EncryptionManager,
+    current_password: Option<String>,
 }
 
 impl UI {
     pub fn new(config: Config) -> Self {
         let api = ApiClient::new(config.server_url.clone());
+        let encryption = EncryptionManager::new().expect("Failed to initialize encryption");
         Self {
             api,
             config,
             update_available: None,
             poller: None,
+            encryption,
+            current_password: None,
         }
     }
 
@@ -118,6 +124,13 @@ impl UI {
             if selection < self.config.get_account_list().len() {
                 // User selected an existing account
                 let username = options[selection].clone();
+
+                // Prompt for password for encryption
+                let password: String = Password::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Password (for encryption)")
+                    .interact()?;
+
+                self.current_password = Some(password);
                 self.config.switch_account(&username);
                 self.config.save()?;
                 println!("{}", format!("✓ Logged in as {}!", username).green());
@@ -161,6 +174,7 @@ impl UI {
         let mut options = vec![
             "View Conversations",
             "Send Message",
+            "Security & Encryption",
             "Change Username",
         ];
 
@@ -187,20 +201,21 @@ impl UI {
         match selection {
             0 => self.view_conversations(),
             1 => self.send_message(None),
-            2 => self.change_username(),
-            3 if update_offset == 1 => self.perform_update(),
+            2 => self.security_menu(),
+            3 => self.change_username(),
+            4 if update_offset == 1 => self.perform_update(),
             _ => {
                 let adjusted = selection - update_offset;
                 match adjusted {
-                    3 => {
-                        self.logout()?;
-                        Ok(true)
-                    }
                     4 => {
                         self.logout()?;
                         Ok(true)
                     }
-                    5 => Ok(false),
+                    5 => {
+                        self.logout()?;
+                        Ok(true)
+                    }
+                    6 => Ok(false),
                     _ => Ok(true),
                 }
             }
@@ -217,14 +232,65 @@ impl UI {
             .with_prompt("Password")
             .interact()?;
 
+        let confirm_password: String = Password::with_theme(&ColorfulTheme::default())
+            .with_prompt("Confirm Password")
+            .interact()?;
+
+        if password != confirm_password {
+            println!("{}", "✗ Passwords do not match!".red());
+            println!();
+            self.wait_for_enter();
+            return Ok(true);
+        }
+
         println!("\n{}", "Creating account...".yellow());
 
-        match self.api.create_account(username.clone(), password) {
+        match self.api.create_account(username.clone(), password.clone()) {
             Ok(response) => {
-                self.config.add_account(response.username, response.token);
+                self.config.add_account(response.username.clone(), response.token.clone());
                 self.config.save()?;
 
+                // Store password temporarily for key operations
+                self.current_password = Some(password.clone());
+
                 println!("{}", "✓ Account created successfully!".green());
+                println!("{}", "🔐 Generating encryption keys...".yellow());
+
+                // Generate encryption keys
+                if let Err(e) = self.encryption.initialize_keys(&password) {
+                    println!("{}", format!("⚠ Warning: Failed to generate encryption keys: {}", e).yellow());
+                } else {
+                    println!("{}", "✓ Encryption keys generated!".green());
+
+                    // Upload public keys to server
+                    println!("{}", "📤 Uploading public keys...".yellow());
+                    if let Ok(key_bundle) = self.encryption.get_public_key_bundle(&password) {
+                        let api_key_bundle = crate::api::models::KeyBundle {
+                            identity_key: key_bundle.identity_key,
+                            signed_prekey: key_bundle.signed_prekey,
+                            signed_prekey_signature: key_bundle.signed_prekey_signature,
+                            one_time_prekeys: key_bundle.one_time_prekeys,
+                        };
+
+                        if let Err(e) = self.api.upload_keys(&response.token, api_key_bundle) {
+                            println!("{}", format!("⚠ Warning: Failed to upload keys: {}", e).yellow());
+                        } else {
+                            println!("{}", "✓ Public keys uploaded!".green());
+                        }
+                    }
+
+                    // Show fingerprint
+                    if let Ok(fingerprint) = self.encryption.get_fingerprint() {
+                        println!();
+                        println!("{}", "Your encryption fingerprint:".cyan().bold());
+                        println!("{}", fingerprint.bright_white().bold());
+                        println!();
+                        println!("{}", "⚠ Save this fingerprint! Others can verify it's really you.".yellow());
+                    }
+                }
+
+                println!();
+                println!("{}", "✓ End-to-end encryption enabled! 🔒".green().bold());
                 println!();
                 self.wait_for_enter();
                 Ok(true)
@@ -290,13 +356,114 @@ impl UI {
             return Ok(true);
         }
 
-        println!("\n{}", "Sending message...".yellow());
+        println!("\n{}", "🔐 Encrypting message...".yellow());
 
         let token = self.config.get_current_token().unwrap();
+        let password = match &self.current_password {
+            Some(p) => p.clone(),
+            None => {
+                println!("{}", "✗ Password required for encryption".red());
+                println!();
+                self.wait_for_enter();
+                return Ok(true);
+            }
+        };
 
-        match self.api.send_message(token, to_username.clone(), content) {
+        // Fetch recipient's public keys and establish session if needed
+        if !self.encryption.has_session(&to_username) {
+            println!("{}", format!("🔑 Establishing secure session with {}...", to_username).yellow());
+
+            match self.api.get_keys(token, &to_username) {
+                Ok(response) => {
+                    let crypto_key_bundle = crate::crypto::keys::KeyBundle {
+                        identity_key: response.key_bundle.identity_key.clone(),
+                        signed_prekey: response.key_bundle.signed_prekey.clone(),
+                        signed_prekey_signature: response.key_bundle.signed_prekey_signature.clone(),
+                        one_time_prekeys: response.key_bundle.one_time_prekeys.clone(),
+                    };
+
+                    // Check for key changes (security feature)
+                    if let Ok(key_changed) = self.encryption.check_key_change(&to_username, &response.key_bundle.identity_key) {
+                        if key_changed {
+                            println!();
+                            println!("{}", format!("⚠️  WARNING: {}'s encryption keys have changed!", to_username).red().bold());
+                            println!("{}", "This could indicate:".yellow());
+                            println!("{}", "  • They reinstalled the app or got a new device".yellow());
+                            println!("{}", "  • Someone is trying to intercept your messages (rare)".yellow());
+                            println!();
+
+                            let continue_sending = Confirm::with_theme(&ColorfulTheme::default())
+                                .with_prompt("Do you want to continue sending?")
+                                .default(false)
+                                .interact()?;
+
+                            if !continue_sending {
+                                println!("{}", "✗ Message cancelled".yellow());
+                                println!();
+                                self.wait_for_enter();
+                                return Ok(true);
+                            }
+                        }
+                    }
+
+                    if let Err(e) = self.encryption.establish_session_with_bundle(&to_username, &password, &crypto_key_bundle) {
+                        println!("{}", format!("✗ Failed to establish secure session: {}", e).red());
+                        println!();
+                        self.wait_for_enter();
+                        return Ok(true);
+                    }
+
+                    println!("{}", "✓ Secure session established!".green());
+                }
+                Err(e) => {
+                    println!("{}", format!("✗ Failed to get recipient's keys: {}", e).red());
+                    println!("{}", "⚠ Sending unencrypted message...".yellow());
+
+                    // Fallback to unencrypted
+                    match self.api.send_message(token, to_username.clone(), content) {
+                        Ok(_) => {
+                            println!("{}", format!("✓ Message sent to {}! (unencrypted)", to_username).green());
+                            println!();
+                            self.wait_for_enter();
+                            return Ok(true);
+                        }
+                        Err(e) => {
+                            println!("{}", format!("✗ Error: {}", e).red());
+                            println!();
+                            self.wait_for_enter();
+                            return Ok(true);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Encrypt the message
+        let encrypted_content = match self.api.get_keys(token, &to_username) {
+            Ok(response) => {
+                match self.encryption.encrypt_message(&to_username, &password, &content, &response.key_bundle.identity_key) {
+                    Ok(encrypted) => encrypted,
+                    Err(e) => {
+                        println!("{}", format!("✗ Encryption failed: {}", e).red());
+                        println!();
+                        self.wait_for_enter();
+                        return Ok(true);
+                    }
+                }
+            }
+            Err(e) => {
+                println!("{}", format!("✗ Failed to get recipient's keys: {}", e).red());
+                println!();
+                self.wait_for_enter();
+                return Ok(true);
+            }
+        };
+
+        println!("{}", "📤 Sending encrypted message...".yellow());
+
+        match self.api.send_message(token, to_username.clone(), encrypted_content) {
             Ok(_) => {
-                println!("{}", format!("✓ Message sent to {}!", to_username).green());
+                println!("{}", format!("✓ Encrypted message sent to {}! 🔒", to_username).green().bold());
                 println!();
                 self.wait_for_enter();
                 Ok(true)
@@ -462,8 +629,8 @@ impl UI {
                         println!("{}", "No messages yet.".yellow());
                     } else {
                         // Display messages in chronological order (oldest first, latest at bottom)
-                        for msg in messages.iter() {
-                            self.print_message(msg);
+                        for msg in messages.iter().cloned() {
+                            self.print_message(&msg);
                         }
                     }
 
@@ -530,7 +697,7 @@ impl UI {
         Ok(true)
     }
 
-    fn print_message(&self, msg: &MessageResponse) {
+    fn print_message(&mut self, msg: &MessageResponse) {
         let time = msg.created_at.with_timezone(&Local);
         let time_str = time.format("%Y-%m-%d %H:%M:%S").to_string();
         let current_user = self.config.get_current_username().unwrap();
@@ -544,14 +711,239 @@ impl UI {
             );
         } else {
             // Received message
-            println!("{} {} → {}",
+            println!("{} {} → {} 🔒",
                 time_str.bright_black(),
                 msg.from_username.cyan().bold(),
                 "You".green()
             );
         }
-        println!("  {}", msg.content);
+
+        // Try to decrypt the message
+        let decrypted_content = if let Some(password) = &self.current_password {
+            let sender = if &msg.from_username == current_user {
+                &msg.to_username
+            } else {
+                &msg.from_username
+            };
+
+            match self.encryption.decrypt_message(sender, password, &msg.content) {
+                Ok(plaintext) => plaintext,
+                Err(_) => {
+                    // If decryption fails, assume it's a plaintext message (backwards compatibility)
+                    msg.content.clone()
+                }
+            }
+        } else {
+            msg.content.clone()
+        };
+
+        println!("  {}", decrypted_content);
         println!();
+    }
+
+    fn security_menu(&mut self) -> Result<bool> {
+        self.clear_screen();
+        println!("{}", "═══ Security & Encryption ═══".cyan().bold());
+        println!();
+
+        let options = vec![
+            "View My Fingerprint",
+            "Verify Contact",
+            "Export Key Backup",
+            "Import Key Backup",
+            "← Back",
+        ];
+
+        let selection = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Security Options")
+            .items(&options)
+            .default(0)
+            .interact()?;
+
+        match selection {
+            0 => self.view_fingerprint(),
+            1 => self.verify_contact(),
+            2 => self.export_backup(),
+            3 => self.import_backup(),
+            4 => Ok(true),
+            _ => Ok(true),
+        }
+    }
+
+    fn view_fingerprint(&self) -> Result<bool> {
+        self.clear_screen();
+        println!("{}", "═══ Your Encryption Fingerprint ═══".cyan().bold());
+        println!();
+
+        match self.encryption.get_fingerprint() {
+            Ok(fingerprint) => {
+                println!("{}", fingerprint.bright_white().bold());
+                println!();
+                println!("{}", "Share this fingerprint with your contacts so they can verify it's really you.".yellow());
+            }
+            Err(e) => {
+                println!("{}", format!("✗ Failed to get fingerprint: {}", e).red());
+            }
+        }
+
+        println!();
+        self.wait_for_enter();
+        Ok(true)
+    }
+
+    fn verify_contact(&mut self) -> Result<bool> {
+        self.clear_screen();
+        println!("{}", "═══ Verify Contact ═══".cyan().bold());
+        println!();
+
+        let username: String = Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("Contact username")
+            .allow_empty(true)
+            .interact_text()?;
+
+        if username.is_empty() {
+            return Ok(true);
+        }
+
+        let token = self.config.get_current_token().unwrap();
+
+        println!("\n{}", "Fetching contact's public key...".yellow());
+
+        match self.api.get_keys(token, &username) {
+            Ok(response) => {
+                let fingerprint = self.encryption.get_fingerprint_for_key(&response.key_bundle.identity_key)?;
+
+                println!();
+                println!("{}", format!("{}'s fingerprint:", username).cyan().bold());
+                println!("{}", fingerprint.bright_white().bold());
+                println!();
+
+                let matches = Confirm::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Does this fingerprint match what they told you?")
+                    .default(false)
+                    .interact()?;
+
+                if matches {
+                    self.encryption.verify_contact_key(&username, &response.key_bundle.identity_key, &fingerprint)?;
+                    println!();
+                    println!("{}", format!("✓ {} has been marked as verified! ✓", username).green().bold());
+                } else {
+                    println!();
+                    println!("{}", "⚠ Fingerprints do not match! Do not send sensitive messages.".red().bold());
+                }
+            }
+            Err(e) => {
+                println!("{}", format!("✗ Failed to get contact's keys: {}", e).red());
+            }
+        }
+
+        println!();
+        self.wait_for_enter();
+        Ok(true)
+    }
+
+    fn export_backup(&self) -> Result<bool> {
+        self.clear_screen();
+        println!("{}", "═══ Export Key Backup ═══".cyan().bold());
+        println!();
+        println!("{}", "This will export your encryption keys so you can import them on another device.".yellow());
+        println!("{}", "⚠ Keep this backup safe! Anyone with it can read your messages.".red().bold());
+        println!();
+
+        let password = match &self.current_password {
+            Some(p) => p.clone(),
+            None => {
+                println!("{}", "✗ Password required".red());
+                println!();
+                self.wait_for_enter();
+                return Ok(true);
+            }
+        };
+
+        let backup_password: String = Password::with_theme(&ColorfulTheme::default())
+            .with_prompt("Backup password (to encrypt the backup)")
+            .interact()?;
+
+        let confirm_password: String = Password::with_theme(&ColorfulTheme::default())
+            .with_prompt("Confirm backup password")
+            .interact()?;
+
+        if backup_password != confirm_password {
+            println!("{}", "✗ Passwords do not match!".red());
+            println!();
+            self.wait_for_enter();
+            return Ok(true);
+        }
+
+        match self.encryption.export_backup(&password, &backup_password) {
+            Ok(backup) => {
+                println!();
+                println!("{}", "✓ Backup created!".green());
+                println!();
+                println!("{}", "Your encrypted backup (save this):".cyan().bold());
+                println!("{}", backup.bright_white());
+                println!();
+                println!("{}", "⚠ Store this backup in a safe place!".yellow());
+            }
+            Err(e) => {
+                println!("{}", format!("✗ Failed to create backup: {}", e).red());
+            }
+        }
+
+        println!();
+        self.wait_for_enter();
+        Ok(true)
+    }
+
+    fn import_backup(&mut self) -> Result<bool> {
+        self.clear_screen();
+        println!("{}", "═══ Import Key Backup ═══".cyan().bold());
+        println!();
+
+        let backup: String = Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("Paste your encrypted backup")
+            .allow_empty(true)
+            .interact_text()?;
+
+        if backup.is_empty() {
+            return Ok(true);
+        }
+
+        let backup_password: String = Password::with_theme(&ColorfulTheme::default())
+            .with_prompt("Backup password")
+            .interact()?;
+
+        let new_password: String = Password::with_theme(&ColorfulTheme::default())
+            .with_prompt("New password (for this device)")
+            .interact()?;
+
+        let confirm_password: String = Password::with_theme(&ColorfulTheme::default())
+            .with_prompt("Confirm new password")
+            .interact()?;
+
+        if new_password != confirm_password {
+            println!("{}", "✗ Passwords do not match!".red());
+            println!();
+            self.wait_for_enter();
+            return Ok(true);
+        }
+
+        match self.encryption.import_backup(&backup, &backup_password, &new_password) {
+            Ok(_) => {
+                self.current_password = Some(new_password);
+                println!();
+                println!("{}", "✓ Backup imported successfully!".green());
+                println!("{}", "You can now decrypt messages from this device.".green());
+            }
+            Err(e) => {
+                println!();
+                println!("{}", format!("✗ Failed to import backup: {}", e).red());
+            }
+        }
+
+        println!();
+        self.wait_for_enter();
+        Ok(true)
     }
 
     fn print_banner(&self) {

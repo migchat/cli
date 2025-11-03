@@ -1,4 +1,5 @@
 use crate::api::ApiClient;
+#[cfg(target_os = "linux")]
 use notify_rust::Notification;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -6,6 +7,20 @@ use std::thread;
 use std::time::Duration;
 
 const POLL_INTERVAL_SECS: u64 = 10;
+
+#[cfg(not(target_os = "linux"))]
+fn send_notification(_from: &str, _content: &str) {
+    // Notifications only supported on Linux currently
+}
+
+#[cfg(target_os = "linux")]
+fn send_notification(from: &str, content: &str) {
+    let _ = Notification::new()
+        .summary("New MigChat Message")
+        .body(&format!("From {}: {}", from, content))
+        .timeout(5000)
+        .show();
+}
 
 pub struct MessagePoller {
     should_stop: Arc<Mutex<bool>>,
@@ -41,12 +56,7 @@ impl MessagePoller {
                         // Only notify about messages TO the current user that we haven't seen
                         if msg.to_username == username && !seen.contains(&msg.id) {
                             // Send notification
-                            let _ = Notification::new()
-                                .summary("New MigChat Message")
-                                .body(&format!("From {}: {}", msg.from_username, msg.content))
-                                .timeout(5000)
-                                .show();
-
+                            send_notification(&msg.from_username, &msg.content);
                             seen.insert(msg.id);
                         } else if !seen.contains(&msg.id) {
                             // Mark as seen even if it's a sent message

@@ -438,9 +438,11 @@ impl UI {
 
         println!("\n{}", "Loading messages...".yellow());
 
-        match self.api.get_messages(token) {
+        // Mark messages as read when opening the conversation
+        let _ = self.api.mark_messages_read(token, username);
+
+        match self.api.get_filtered_messages(token, username) {
             Ok(all_messages) => {
-                // Filter messages for this conversation
                 // Note: API returns messages in DESC order (newest first), so we reverse to get chronological order
                 let mut messages: Vec<_> = all_messages
                     .iter()

@@ -164,4 +164,53 @@ impl ApiClient {
             Err(anyhow!("Failed to update username: {}", error.error))
         }
     }
+
+    pub fn mark_messages_read(&self, token: &str, with_user: &str) -> Result<()> {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", token))?,
+        );
+
+        let response = self
+            .client
+            .post(format!("{}/api/messages/mark-read?with_user={}", self.base_url, with_user))
+            .headers(headers)
+            .send()?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            let status = response.status();
+            let error: ErrorResponse = response.json().unwrap_or(ErrorResponse {
+                error: format!("HTTP {}", status),
+            });
+            Err(anyhow!("Failed to mark messages as read: {}", error.error))
+        }
+    }
+
+    pub fn get_filtered_messages(&self, token: &str, with_user: &str) -> Result<Vec<MessageResponse>> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", token))?,
+        );
+
+        let response = self
+            .client
+            .get(format!("{}/api/messages/filtered?with_user={}", self.base_url, with_user))
+            .headers(headers)
+            .send()?;
+
+        if response.status().is_success() {
+            Ok(response.json()?)
+        } else {
+            let status = response.status();
+            let error: ErrorResponse = response.json().unwrap_or(ErrorResponse {
+                error: format!("HTTP {}", status),
+            });
+            Err(anyhow!("Failed to get filtered messages: {}", error.error))
+        }
+    }
 }

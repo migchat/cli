@@ -385,13 +385,15 @@ impl UI {
         match self.api.get_messages(token) {
             Ok(all_messages) => {
                 // Filter messages for this conversation
-                let messages: Vec<_> = all_messages
+                // Note: API returns messages in DESC order (newest first), so we reverse to get chronological order
+                let mut messages: Vec<_> = all_messages
                     .iter()
                     .filter(|msg| {
                         (&msg.from_username == username && &msg.to_username == &current_user)
                             || (&msg.from_username == &current_user && &msg.to_username == username)
                     })
                     .collect();
+                messages.reverse(); // Now oldest to newest (chronological)
 
                 loop {
                     self.clear_screen();
@@ -401,7 +403,8 @@ impl UI {
                     if messages.is_empty() {
                         println!("{}", "No messages yet.".yellow());
                     } else {
-                        for msg in messages.iter().rev() {
+                        // Display messages in chronological order (oldest first, latest at bottom)
+                        for msg in messages.iter() {
                             self.print_message(msg);
                         }
                     }

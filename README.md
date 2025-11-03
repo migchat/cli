@@ -52,37 +52,52 @@ cargo run
 ### First Time Setup
 
 1. The CLI will connect to the default server: `https://server-1ce-la.fly.dev`
-2. Create an account by selecting "Create Account"
+2. On first launch, you'll be prompted to create an account
 3. Enter your desired username and password
-4. Your session will be saved automatically
+4. Your account and session will be saved automatically
+
+### Account Management
+
+The CLI supports multiple accounts:
+
+- **First Login**: When no accounts exist, you'll be prompted to create one
+- **Returning Users**: When accounts exist, you'll see a list of saved accounts to select from
+- **Switch Accounts**: Switch between accounts without re-entering credentials
+- **Persistent Sessions**: All account tokens are stored securely in `~/.migchat/config.json`
 
 ### Main Features
 
-#### 1. Create Account
+#### 1. Multiple Account Support
+- Store multiple accounts on the same server
+- Quickly switch between accounts
+- Each account maintains its own authentication token
+
+#### 2. Create Account
 - Create a new account with a unique username
 - Password is securely hashed on the server
 - Authentication token is stored locally
 
-#### 2. View Conversations
+#### 3. View Conversations
 - See all your active conversations
 - Shows last message and timestamp
 - Displays unread message count
 
-#### 3. View All Messages
+#### 4. View All Messages
 - See complete message history
 - Shows sent and received messages
 - Color-coded for easy reading (you vs others)
 
-#### 4. Send Message
+#### 5. Send Message
 - Send a message to any username
 - Server validates recipient exists
 - Instant confirmation
 
-#### 5. Logout
-- Clears your local session
-- Removes stored token
+#### 6. Switch Account / Logout
+- Switch between your saved accounts
+- Logout to return to account selection
+- Accounts remain saved for easy re-login
 
-#### 6. Set Server URL
+#### 7. Set Server URL
 - Connect to a different MigChat server
 - Useful for development or self-hosted instances
 
@@ -93,8 +108,17 @@ Configuration is stored in `~/.migchat/config.json`:
 ```json
 {
   "server_url": "https://server-1ce-la.fly.dev",
-  "username": "your_username",
-  "token": "your_auth_token"
+  "accounts": {
+    "alice": {
+      "username": "alice",
+      "token": "alice_auth_token"
+    },
+    "bob": {
+      "username": "bob",
+      "token": "bob_auth_token"
+    }
+  },
+  "current_account": "alice"
 }
 ```
 

@@ -1,13 +1,20 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Account {
+    pub username: String,
+    pub token: String,
+}
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Config {
     pub server_url: String,
-    pub username: Option<String>,
-    pub token: Option<String>,
+    pub accounts: HashMap<String, Account>, // key is username
+    pub current_account: Option<String>,     // current username
 }
 
 impl Config {
@@ -45,12 +52,58 @@ impl Config {
     }
 
     pub fn is_logged_in(&self) -> bool {
-        self.token.is_some() && self.username.is_some()
+        self.current_account.is_some()
     }
 
-    pub fn logout(&mut self) {
-        self.token = None;
-        self.username = None;
+    pub fn has_accounts(&self) -> bool {
+        !self.accounts.is_empty()
+    }
+
+    pub fn get_current_account(&self) -> Option<&Account> {
+        self.current_account
+            .as_ref()
+            .and_then(|username| self.accounts.get(username))
+    }
+
+    pub fn get_current_username(&self) -> Option<&String> {
+        self.current_account.as_ref()
+    }
+
+    pub fn get_current_token(&self) -> Option<&String> {
+        self.get_current_account().map(|acc| &acc.token)
+    }
+
+    pub fn add_account(&mut self, username: String, token: String) {
+        let account = Account {
+            username: username.clone(),
+            token,
+        };
+        self.accounts.insert(username.clone(), account);
+        self.current_account = Some(username);
+    }
+
+    pub fn switch_account(&mut self, username: &str) -> bool {
+        if self.accounts.contains_key(username) {
+            self.current_account = Some(username.to_string());
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn logout_current(&mut self) {
+        self.current_account = None;
+    }
+
+    pub fn remove_account(&mut self, username: &str) {
+        self.accounts.remove(username);
+        if self.current_account.as_deref() == Some(username) {
+            self.current_account = None;
+        }
+    }
+
+    pub fn get_account_list(&self) -> Vec<String> {
+        self.accounts.keys().cloned().collect()
     }
 
     fn config_path() -> Result<PathBuf> {
@@ -63,8 +116,8 @@ impl Config {
     fn default_config() -> Self {
         Self {
             server_url: "https://server-1ce-la.fly.dev".to_string(),
-            username: None,
-            token: None,
+            accounts: HashMap::new(),
+            current_account: None,
         }
     }
 }

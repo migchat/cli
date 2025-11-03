@@ -48,31 +48,67 @@ impl UI {
     }
 
     fn show_auth_menu(&mut self) -> Result<bool> {
-        let options = vec!["Create Account", "Login (Create Account)", "Set Server URL", "Exit"];
+        // If there are existing accounts, show account selection
+        if self.config.has_accounts() {
+            let mut options: Vec<String> = self.config.get_account_list();
+            options.push("Create New Account".to_string());
+            options.push("Set Server URL".to_string());
+            options.push("Exit".to_string());
 
-        let selection = Select::with_theme(&ColorfulTheme::default())
-            .with_prompt("Welcome to MigChat")
-            .items(&options)
-            .default(0)
-            .interact()?;
+            let selection = Select::with_theme(&ColorfulTheme::default())
+                .with_prompt("Select an account to login")
+                .items(&options)
+                .default(0)
+                .interact()?;
 
-        match selection {
-            0 | 1 => self.create_account(),
-            2 => self.set_server_url(),
-            3 => return Ok(false),
-            _ => Ok(true),
+            if selection < self.config.get_account_list().len() {
+                // User selected an existing account
+                let username = options[selection].clone();
+                self.config.switch_account(&username);
+                self.config.save()?;
+                println!("{}", format!("✓ Logged in as {}!", username).green());
+                println!();
+                self.wait_for_enter();
+                Ok(true)
+            } else if selection == self.config.get_account_list().len() {
+                // Create new account
+                self.create_account()
+            } else if selection == self.config.get_account_list().len() + 1 {
+                // Set server URL
+                self.set_server_url()
+            } else {
+                // Exit
+                Ok(false)
+            }
+        } else {
+            // No accounts exist, prompt to create one
+            let options = vec!["Create Account", "Set Server URL", "Exit"];
+
+            let selection = Select::with_theme(&ColorfulTheme::default())
+                .with_prompt("Welcome to MigChat")
+                .items(&options)
+                .default(0)
+                .interact()?;
+
+            match selection {
+                0 => self.create_account(),
+                1 => self.set_server_url(),
+                2 => Ok(false),
+                _ => Ok(true),
+            }
         }
     }
 
     fn show_main_menu(&mut self) -> Result<bool> {
         self.clear_screen();
-        println!("{}", format!("Logged in as: {}", self.config.username.as_ref().unwrap()).cyan().bold());
+        println!("{}", format!("Logged in as: {}", self.config.get_current_username().unwrap()).cyan().bold());
         println!();
 
         let options = vec![
             "View Conversations",
             "View All Messages",
             "Send Message",
+            "Switch Account",
             "Logout",
             "Exit",
         ];
@@ -91,7 +127,11 @@ impl UI {
                 self.logout()?;
                 Ok(true)
             }
-            4 => Ok(false),
+            4 => {
+                self.logout()?;
+                Ok(true)
+            }
+            5 => Ok(false),
             _ => Ok(true),
         }
     }
@@ -110,8 +150,7 @@ impl UI {
 
         match self.api.create_account(username.clone(), password) {
             Ok(response) => {
-                self.config.username = Some(response.username);
-                self.config.token = Some(response.token);
+                self.config.add_account(response.username, response.token);
                 self.config.save()?;
 
                 println!("{}", "✓ Account created successfully!".green());
@@ -140,7 +179,7 @@ impl UI {
 
         println!("\n{}", "Sending message...".yellow());
 
-        let token = self.config.token.as_ref().unwrap();
+        let token = self.config.get_current_token().unwrap();
 
         match self.api.send_message(token, to_username.clone(), content) {
             Ok(_) => {
@@ -159,7 +198,7 @@ impl UI {
     }
 
     fn view_messages(&mut self) -> Result<bool> {
-        let token = self.config.token.as_ref().unwrap();
+        let token = self.config.get_current_token().unwrap();
 
         println!("\n{}", "Loading messages...".yellow());
 
@@ -191,7 +230,7 @@ impl UI {
     }
 
     fn view_conversations(&mut self) -> Result<bool> {
-        let token = self.config.token.as_ref().unwrap();
+        let token = self.config.get_current_token().unwrap();
 
         println!("\n{}", "Loading conversations...".yellow());
 
@@ -229,7 +268,7 @@ impl UI {
     }
 
     fn logout(&mut self) -> Result<()> {
-        self.config.logout();
+        self.config.logout_current();
         self.config.save()?;
         println!("\n{}", "✓ Logged out successfully!".green());
         println!();
@@ -257,7 +296,7 @@ impl UI {
     fn print_message(&self, msg: &MessageResponse) {
         let time = msg.created_at.with_timezone(&Local);
         let time_str = time.format("%Y-%m-%d %H:%M:%S").to_string();
-        let current_user = self.config.username.as_ref().unwrap();
+        let current_user = self.config.get_current_username().unwrap();
 
         if &msg.from_username == current_user {
             // Sent message

@@ -11,9 +11,20 @@ pub struct EncryptionManager {
 
 impl EncryptionManager {
     pub fn new() -> Result<Self> {
+        // Default implementation for backwards compatibility
+        // Keys stored in ~/.config/migchat/keys/
         Ok(Self {
             key_manager: KeyManager::new()?,
             session_manager: SessionManager::new()?,
+        })
+    }
+
+    pub fn for_account(account_username: &str) -> Result<Self> {
+        // Account-specific implementation
+        // Keys stored in ~/.config/migchat/keys/{username}/
+        Ok(Self {
+            key_manager: KeyManager::for_account(account_username)?,
+            session_manager: SessionManager::for_account(account_username)?,
         })
     }
 

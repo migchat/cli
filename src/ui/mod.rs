@@ -13,14 +13,19 @@ pub struct UI {
     config: Config,
     update_available: Option<String>,
     poller: Option<MessagePoller>,
-    encryption: EncryptionManager,
+    encryption: Option<EncryptionManager>,
     current_password: Option<String>,
 }
 
 impl UI {
     pub fn new(config: Config) -> Self {
         let api = ApiClient::new(config.server_url.clone());
-        let encryption = EncryptionManager::new().expect("Failed to initialize encryption");
+        // Initialize encryption manager for current account if logged in
+        let encryption = if let Some(username) = config.get_current_username() {
+            EncryptionManager::for_account(&username).ok()
+        } else {
+            None
+        };
         Self {
             api,
             config,
@@ -29,6 +34,21 @@ impl UI {
             encryption,
             current_password: None,
         }
+    }
+
+    fn switch_encryption_manager(&mut self, username: &str) {
+        // Switch to account-specific encryption manager
+        self.encryption = EncryptionManager::for_account(username).ok();
+    }
+
+    fn ensure_encryption(&self) -> Result<&EncryptionManager> {
+        self.encryption.as_ref()
+            .ok_or_else(|| anyhow!("Encryption manager not initialized"))
+    }
+
+    fn ensure_encryption_mut(&mut self) -> Result<&mut EncryptionManager> {
+        self.encryption.as_mut()
+            .ok_or_else(|| anyhow!("Encryption manager not initialized"))
     }
 
     fn start_polling(&mut self) {
@@ -132,12 +152,13 @@ impl UI {
 
                 self.current_password = Some(password.clone());
                 self.config.switch_account(&username);
+                self.switch_encryption_manager(&username);
                 self.config.save()?;
 
                 // Generate encryption keys if they don't exist
-                if !self.encryption.keys_exist() {
+                if !self.ensure_encryption()?.keys_exist() {
                     println!("{}", "🔐 Generating encryption keys...".yellow());
-                    if let Err(e) = self.encryption.initialize_keys(&password) {
+                    if let Err(e) = self.ensure_encryption()?.initialize_keys(&password) {
                         println!("{}", format!("⚠ Warning: Failed to generate encryption keys: {}", e).yellow());
                     } else {
                         println!("{}", "✓ Encryption keys generated!".green());
@@ -145,7 +166,7 @@ impl UI {
                         // Upload public keys to server
                         if let Some(token) = self.config.get_current_token() {
                             println!("{}", "📤 Uploading public keys...".yellow());
-                            if let Ok(key_bundle) = self.encryption.get_public_key_bundle(&password) {
+                            if let Ok(key_bundle) = self.ensure_encryption()?.get_public_key_bundle(&password) {
                                 let api_key_bundle = crate::api::models::KeyBundle {
                                     identity_key: key_bundle.identity_key,
                                     signed_prekey: key_bundle.signed_prekey,
@@ -162,7 +183,7 @@ impl UI {
                         }
 
                         // Show fingerprint
-                        if let Ok(fingerprint) = self.encryption.get_fingerprint() {
+                        if let Ok(fingerprint) = self.ensure_encryption()?.get_fingerprint() {
                             println!();
                             println!("{}", "Your encryption fingerprint:".cyan().bold());
                             println!("{}", fingerprint.bright_white().bold());
@@ -288,6 +309,7 @@ impl UI {
         match self.api.create_account(username.clone(), password.clone()) {
             Ok(response) => {
                 self.config.add_account(response.username.clone(), response.token.clone());
+                self.switch_encryption_manager(&response.username);
                 self.config.save()?;
 
                 // Store password temporarily for key operations
@@ -297,14 +319,14 @@ impl UI {
                 println!("{}", "🔐 Generating encryption keys...".yellow());
 
                 // Generate encryption keys
-                if let Err(e) = self.encryption.initialize_keys(&password) {
+                if let Err(e) = self.ensure_encryption()?.initialize_keys(&password) {
                     println!("{}", format!("⚠ Warning: Failed to generate encryption keys: {}", e).yellow());
                 } else {
                     println!("{}", "✓ Encryption keys generated!".green());
 
                     // Upload public keys to server
                     println!("{}", "📤 Uploading public keys...".yellow());
-                    if let Ok(key_bundle) = self.encryption.get_public_key_bundle(&password) {
+                    if let Ok(key_bundle) = self.ensure_encryption()?.get_public_key_bundle(&password) {
                         let api_key_bundle = crate::api::models::KeyBundle {
                             identity_key: key_bundle.identity_key,
                             signed_prekey: key_bundle.signed_prekey,
@@ -320,7 +342,7 @@ impl UI {
                     }
 
                     // Show fingerprint
-                    if let Ok(fingerprint) = self.encryption.get_fingerprint() {
+                    if let Ok(fingerprint) = self.ensure_encryption()?.get_fingerprint() {
                         println!();
                         println!("{}", "Your encryption fingerprint:".cyan().bold());
                         println!("{}", fingerprint.bright_white().bold());
@@ -410,7 +432,7 @@ impl UI {
         };
 
         // Fetch recipient's public keys and establish session if needed
-        if !self.encryption.has_session(&to_username) {
+        if !self.ensure_encryption()?.has_session(&to_username) {
             println!("{}", format!("🔑 Establishing secure session with {}...", to_username).yellow());
 
             match self.api.get_keys(token, &to_username) {
@@ -423,7 +445,7 @@ impl UI {
                     };
 
                     // Check for key changes (security feature)
-                    if let Ok(key_changed) = self.encryption.check_key_change(&to_username, &response.key_bundle.identity_key) {
+                    if let Ok(key_changed) = self.ensure_encryption()?.check_key_change(&to_username, &response.key_bundle.identity_key) {
                         if key_changed {
                             println!();
                             println!("{}", format!("⚠️  WARNING: {}'s encryption keys have changed!", to_username).red().bold());
@@ -446,7 +468,7 @@ impl UI {
                         }
                     }
 
-                    if let Err(e) = self.encryption.establish_session_with_bundle(&to_username, &password, &crypto_key_bundle) {
+                    if let Err(e) = self.ensure_encryption_mut()?.establish_session_with_bundle(&to_username, &password, &crypto_key_bundle) {
                         println!("{}", format!("✗ Failed to establish secure session: {}", e).red());
                         println!();
                         self.wait_for_enter();
@@ -481,7 +503,7 @@ impl UI {
         // Encrypt the message
         let encrypted_content = match self.api.get_keys(token, &to_username) {
             Ok(response) => {
-                match self.encryption.encrypt_message(&to_username, &password, &content, &response.key_bundle.identity_key) {
+                match self.ensure_encryption_mut()?.encrypt_message(&to_username, &password, &content, &response.key_bundle.identity_key) {
                     Ok(encrypted) => encrypted,
                     Err(e) => {
                         println!("{}", format!("✗ Encryption failed: {}", e).red());
@@ -766,7 +788,7 @@ impl UI {
                 &msg.from_username
             };
 
-            match self.encryption.decrypt_message(sender, password, &msg.content) {
+            match self.ensure_encryption_mut()?.decrypt_message(sender, password, &msg.content) {
                 Ok(plaintext) => plaintext,
                 Err(_) => {
                     // If decryption fails, assume it's a plaintext message (backwards compatibility)
@@ -815,7 +837,7 @@ impl UI {
         println!("{}", "═══ Your Encryption Fingerprint ═══".cyan().bold());
         println!();
 
-        match self.encryption.get_fingerprint() {
+        match self.ensure_encryption()?.get_fingerprint() {
             Ok(fingerprint) => {
                 println!("{}", fingerprint.bright_white().bold());
                 println!();
@@ -854,7 +876,7 @@ impl UI {
 
         match self.api.get_keys(token, &username) {
             Ok(response) => {
-                let fingerprint = self.encryption.get_fingerprint_for_key(&response.key_bundle.identity_key)?;
+                let fingerprint = self.ensure_encryption()?.get_fingerprint_for_key(&response.key_bundle.identity_key)?;
 
                 println!();
                 println!("{}", format!("{}'s fingerprint:", username).cyan().bold());
@@ -867,7 +889,7 @@ impl UI {
                     .interact()?;
 
                 if matches {
-                    self.encryption.verify_contact_key(&username, &response.key_bundle.identity_key, &fingerprint)?;
+                    self.ensure_encryption()?.verify_contact_key(&username, &response.key_bundle.identity_key, &fingerprint)?;
                     println!();
                     println!("{}", format!("✓ {} has been marked as verified! ✓", username).green().bold());
                 } else {
@@ -918,7 +940,7 @@ impl UI {
             return Ok(true);
         }
 
-        match self.encryption.export_backup(&password, &backup_password) {
+        match self.ensure_encryption()?.export_backup(&password, &backup_password) {
             Ok(backup) => {
                 println!();
                 println!("{}", "✓ Backup created!".green());
@@ -971,7 +993,7 @@ impl UI {
             return Ok(true);
         }
 
-        match self.encryption.import_backup(&backup, &backup_password, &new_password) {
+        match self.ensure_encryption()?.import_backup(&backup, &backup_password, &new_password) {
             Ok(_) => {
                 self.current_password = Some(new_password);
                 println!();

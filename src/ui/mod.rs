@@ -130,9 +130,49 @@ impl UI {
                     .with_prompt("Password (for encryption)")
                     .interact()?;
 
-                self.current_password = Some(password);
+                self.current_password = Some(password.clone());
                 self.config.switch_account(&username);
                 self.config.save()?;
+
+                // Generate encryption keys if they don't exist
+                if !self.encryption.keys_exist() {
+                    println!("{}", "🔐 Generating encryption keys...".yellow());
+                    if let Err(e) = self.encryption.initialize_keys(&password) {
+                        println!("{}", format!("⚠ Warning: Failed to generate encryption keys: {}", e).yellow());
+                    } else {
+                        println!("{}", "✓ Encryption keys generated!".green());
+
+                        // Upload public keys to server
+                        if let Some(token) = self.config.get_current_token() {
+                            println!("{}", "📤 Uploading public keys...".yellow());
+                            if let Ok(key_bundle) = self.encryption.get_public_key_bundle(&password) {
+                                let api_key_bundle = crate::api::models::KeyBundle {
+                                    identity_key: key_bundle.identity_key,
+                                    signed_prekey: key_bundle.signed_prekey,
+                                    signed_prekey_signature: key_bundle.signed_prekey_signature,
+                                    one_time_prekeys: key_bundle.one_time_prekeys,
+                                };
+
+                                if let Err(e) = self.api.upload_keys(token, api_key_bundle) {
+                                    println!("{}", format!("⚠ Warning: Failed to upload keys: {}", e).yellow());
+                                } else {
+                                    println!("{}", "✓ Public keys uploaded!".green());
+                                }
+                            }
+                        }
+
+                        // Show fingerprint
+                        if let Ok(fingerprint) = self.encryption.get_fingerprint() {
+                            println!();
+                            println!("{}", "Your encryption fingerprint:".cyan().bold());
+                            println!("{}", fingerprint.bright_white().bold());
+                            println!();
+                        }
+
+                        println!("{}", "✓ End-to-end encryption enabled! 🔒".green().bold());
+                    }
+                }
+
                 println!("{}", format!("✓ Logged in as {}!", username).green());
                 println!();
                 self.wait_for_enter();
@@ -783,6 +823,9 @@ impl UI {
             }
             Err(e) => {
                 println!("{}", format!("✗ Failed to get fingerprint: {}", e).red());
+                println!();
+                println!("{}", "⚠ Your encryption keys haven't been generated yet.".yellow());
+                println!("{}", "Please log out and log back in to generate your encryption keys.".yellow());
             }
         }
 

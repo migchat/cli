@@ -794,13 +794,19 @@ impl UI {
             );
         }
 
-        // Try to decrypt the message
-        let decrypted_content = if let Ok(password) = self.ensure_password() {
-            let sender = if msg.from_username == current_user {
-                &msg.to_username
+        // Try to decrypt the message (only for received messages)
+        let decrypted_content = if msg.from_username == current_user {
+            // This is a message we sent - we can't decrypt it because we don't have the plaintext
+            // and the ratchet has advanced. Show it as encrypted.
+            if msg.content.len() > 100 && msg.content.chars().all(|c| c.is_alphanumeric() || c == '+' || c == '/' || c == '=') {
+                "[Your encrypted message]".to_string()
             } else {
-                &msg.from_username
-            };
+                // Backwards compatibility for old unencrypted messages
+                msg.content.clone()
+            }
+        } else if let Ok(password) = self.ensure_password() {
+            // This is a received message - try to decrypt it
+            let sender = &msg.from_username;
 
             // Try to decrypt - if encryption manager exists
             if let Ok(enc) = self.ensure_encryption_mut() {

@@ -776,7 +776,7 @@ impl UI {
     fn print_message(&mut self, msg: &MessageResponse) {
         let time = msg.created_at.with_timezone(&Local);
         let time_str = time.format("%Y-%m-%d %H:%M:%S").to_string();
-        let current_user = self.config.get_current_username().unwrap();
+        let current_user = self.config.get_current_username().unwrap().clone();
 
         if &msg.from_username == current_user {
             // Sent message

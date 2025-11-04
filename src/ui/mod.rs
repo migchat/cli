@@ -435,7 +435,7 @@ impl UI {
         if !self.ensure_encryption()?.has_session(&to_username) {
             println!("{}", format!("🔑 Establishing secure session with {}...", to_username).yellow());
 
-            match self.api.get_keys(token, &to_username) {
+            match self.api.get_keys(&token, &to_username) {
                 Ok(response) => {
                     let crypto_key_bundle = crate::crypto::keys::KeyBundle {
                         identity_key: response.key_bundle.identity_key.clone(),
@@ -482,7 +482,7 @@ impl UI {
                     println!("{}", "⚠ Sending unencrypted message...".yellow());
 
                     // Fallback to unencrypted
-                    match self.api.send_message(token, to_username.clone(), content) {
+                    match self.api.send_message(&token, to_username.clone(), content) {
                         Ok(_) => {
                             println!("{}", format!("✓ Message sent to {}! (unencrypted)", to_username).green());
                             println!();
@@ -501,7 +501,7 @@ impl UI {
         }
 
         // Encrypt the message
-        let encrypted_content = match self.api.get_keys(token, &to_username) {
+        let encrypted_content = match self.api.get_keys(&token, &to_username) {
             Ok(response) => {
                 match self.ensure_encryption_mut()?.encrypt_message(&to_username, &password, &content, &response.key_bundle.identity_key) {
                     Ok(encrypted) => encrypted,
@@ -523,7 +523,7 @@ impl UI {
 
         println!("{}", "📤 Sending encrypted message...".yellow());
 
-        match self.api.send_message(token, to_username.clone(), encrypted_content) {
+        match self.api.send_message(&token, to_username.clone(), encrypted_content) {
             Ok(_) => {
                 println!("{}", format!("✓ Encrypted message sent to {}! 🔒", to_username).green().bold());
                 println!();
@@ -576,7 +576,7 @@ impl UI {
 
         let token = self.config.get_current_token().unwrap().clone();
 
-        match self.api.update_username(token, new_username.clone()) {
+        match self.api.update_username(&token, new_username.clone()) {
             Ok(response) => {
                 // Update config with new username
                 let old_username = self.config.get_current_username().unwrap().clone();
@@ -609,7 +609,7 @@ impl UI {
 
         println!("\n{}", "Loading conversations...".yellow());
 
-        match self.api.get_conversations(token) {
+        match self.api.get_conversations(&token) {
             Ok(conversations) => {
                 if conversations.is_empty() {
                     self.clear_screen();
@@ -668,9 +668,9 @@ impl UI {
         println!("\n{}", "Loading messages...".yellow());
 
         // Mark messages as read when opening the conversation
-        let _ = self.api.mark_messages_read(token, username);
+        let _ = self.api.mark_messages_read(&token, username);
 
-        match self.api.get_filtered_messages(token, username) {
+        match self.api.get_filtered_messages(&token, username) {
             Ok(all_messages) => {
                 // Note: API returns messages in DESC order (newest first), so we reverse to get chronological order
                 let mut messages: Vec<_> = all_messages
@@ -781,14 +781,14 @@ impl UI {
         }
 
         // Try to decrypt the message
-        let decrypted_content = if let Some(password) = &self.current_password {
+        let decrypted_content = if let Some(password) = self.current_password.clone() {
             let sender = if &msg.from_username == current_user {
                 &msg.to_username
             } else {
                 &msg.from_username
             };
 
-            match self.ensure_encryption_mut().ok().and_then(|enc| enc.decrypt_message(sender, password, &msg.content).ok()) {
+            match self.ensure_encryption_mut().ok().and_then(|enc| enc.decrypt_message(sender, &password, &msg.content).ok()) {
                 Some(plaintext) => plaintext,
                 None => {
                     // If decryption fails, assume it's a plaintext message (backwards compatibility)
@@ -874,7 +874,7 @@ impl UI {
 
         println!("\n{}", "Fetching contact's public key...".yellow());
 
-        match self.api.get_keys(token, &username) {
+        match self.api.get_keys(&token, &username) {
             Ok(response) => {
                 let fingerprint = self.ensure_encryption()?.get_fingerprint_for_key(&response.key_bundle.identity_key)?;
 

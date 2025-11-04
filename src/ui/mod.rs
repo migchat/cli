@@ -819,7 +819,8 @@ impl UI {
                         // Received message - try to decrypt (don't advance ratchet for viewing)
                         let sender = &msg.from_username;
 
-                        // Try to establish session if needed
+                        // If we don't have a session, establish one from the message
+                        // The message contains the sender's ephemeral key for X3DH
                         if !enc.has_session(sender) {
                             if let Err(e) = enc.establish_session_from_message(sender, &msg.content, &password) {
                                 return println!("  [Could not establish session: {}]", e);

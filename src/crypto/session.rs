@@ -33,6 +33,7 @@ pub struct Session {
     pub username: String,
     pub identity_key: String,
     pub session_keys: SessionKeys,
+    pub our_ephemeral_key: Option<String>, // Store our ephemeral key for this session
     pub created_at: i64,
 }
 
@@ -164,7 +165,7 @@ impl SessionManager {
         hkdf.expand(b"MigChat-ChainKey", &mut *chain_key)
             .map_err(|e| anyhow!("HKDF expand failed: {}", e))?;
 
-        // Create session
+        // Create session and store our ephemeral key
         let session = Session {
             username: username.to_string(),
             identity_key: BASE64.encode(their_identity_key),
@@ -174,6 +175,7 @@ impl SessionManager {
                 message_number: 0,
                 previous_counter: 0,
             },
+            our_ephemeral_key: Some(BASE64.encode(our_ephemeral_key.public_bytes())),
             created_at: chrono::Utc::now().timestamp(),
         };
 
@@ -236,7 +238,7 @@ impl SessionManager {
         hkdf.expand(b"MigChat-ChainKey", &mut *chain_key)
             .map_err(|e| anyhow!("HKDF expand failed: {}", e))?;
 
-        // Create session
+        // Create session (no ephemeral key for receiver - we derived from their ephemeral)
         let session = Session {
             username: username.to_string(),
             identity_key: BASE64.encode(&their_identity_key_bytes),
@@ -246,6 +248,7 @@ impl SessionManager {
                 message_number: 0,
                 previous_counter: 0,
             },
+            our_ephemeral_key: None, // Receiver doesn't need to store ephemeral key
             created_at: chrono::Utc::now().timestamp(),
         };
 
@@ -282,12 +285,16 @@ impl SessionManager {
         their_identity_key: &[u8],
     ) -> Result<EncryptedMessage> {
         // Extract data needed before getting mutable borrow
-        let (chain_key_str, message_number) = {
+        let (chain_key_str, message_number, ephemeral_key_str) = {
             let session = self
                 .sessions
                 .get(username)
                 .ok_or_else(|| anyhow!("No session found for {}", username))?;
-            (session.session_keys.chain_key.clone(), session.session_keys.message_number)
+            (
+                session.session_keys.chain_key.clone(),
+                session.session_keys.message_number,
+                session.our_ephemeral_key.clone().unwrap_or_else(|| BASE64.encode(our_identity_key.public_bytes()))
+            )
         };
 
         // Derive message key from chain key
@@ -327,13 +334,13 @@ impl SessionManager {
 
         self.save_sessions()?;
 
-        // Use our identity key public bytes as the ephemeral key field
-        // (kept for backwards compatibility with message structure)
+        // Include the ephemeral key that was used during session establishment
+        // This allows the receiver to establish the same session if they don't have one yet
         Ok(EncryptedMessage {
             version: 1,
             sender_identity_key: BASE64.encode(our_identity_key.public_bytes()),
             receiver_identity_key: BASE64.encode(their_identity_key),
-            ephemeral_key: BASE64.encode(our_identity_key.public_bytes()),
+            ephemeral_key: ephemeral_key_str, // Our ephemeral key from session establishment
             ciphertext: BASE64.encode(&nonce_and_ciphertext),
             mac: BASE64.encode(mac_result.into_bytes()),
         })

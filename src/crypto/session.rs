@@ -192,11 +192,13 @@ impl SessionManager {
     }
 
     // Establish a session as the receiver from an incoming message
-    fn establish_session_from_message(
+    // This is called when we receive a message from someone we don't have a session with
+    pub fn establish_session_from_message(
         &mut self,
         username: &str,
         encrypted_msg: &EncryptedMessage,
         our_identity_key: &KeyPair,
+        our_signed_prekey: &KeyPair,
     ) -> Result<()> {
         // Decode keys from the message
         let their_identity_key_bytes = BASE64.decode(&encrypted_msg.sender_identity_key)?;
@@ -205,19 +207,18 @@ impl SessionManager {
         let their_identity_pub = PublicKey::from(*array_ref::array_ref![&their_identity_key_bytes, 0, 32]);
         let their_ephemeral_pub = PublicKey::from(*array_ref::array_ref![&their_ephemeral_key_bytes, 0, 32]);
 
-        // Load our signed prekey (we need this for the receiver side)
-        // For now, we'll use our identity key as the signed prekey
-        // TODO: This needs to match the actual signed prekey that was uploaded to the server
+        // Receiver's X3DH key agreement (matching sender's operations)
+        // Sender computed: DH1 = DH(IK_A, SPK_B), DH2 = DH(EK_A, IK_B), DH3 = DH(EK_A, SPK_B)
+        // Receiver computes the same shared secrets (DH is symmetric):
 
-        // Receiver's X3DH key agreement (reverse of sender's)
         // DH1 = DH(SPK_B, IK_A) = DH(IK_A, SPK_B) [symmetric]
-        let dh1 = our_identity_key.secret.diffie_hellman(&their_identity_pub);
+        let dh1 = our_signed_prekey.secret.diffie_hellman(&their_identity_pub);
 
         // DH2 = DH(IK_B, EK_A) = DH(EK_A, IK_B) [symmetric]
         let dh2 = our_identity_key.secret.diffie_hellman(&their_ephemeral_pub);
 
         // DH3 = DH(SPK_B, EK_A) = DH(EK_A, SPK_B) [symmetric]
-        let dh3 = our_identity_key.secret.diffie_hellman(&their_ephemeral_pub);
+        let dh3 = our_signed_prekey.secret.diffie_hellman(&their_ephemeral_pub);
 
         // Combine DH outputs (same order as sender)
         let mut shared_secret = Vec::new();
@@ -310,9 +311,6 @@ impl SessionManager {
         nonce_and_ciphertext.extend_from_slice(&nonce_bytes);
         nonce_and_ciphertext.extend_from_slice(&ciphertext);
 
-        // Generate ephemeral key for this message
-        let ephemeral_key = KeyPair::generate();
-
         // Create MAC over nonce + ciphertext
         let mut mac = <Hmac::<Sha256> as HmacMac>::new_from_slice(&message_key[..32])
             .map_err(|e| anyhow!("HMAC creation failed: {}", e))?;
@@ -329,11 +327,13 @@ impl SessionManager {
 
         self.save_sessions()?;
 
+        // Use our identity key public bytes as the ephemeral key field
+        // (kept for backwards compatibility with message structure)
         Ok(EncryptedMessage {
             version: 1,
             sender_identity_key: BASE64.encode(our_identity_key.public_bytes()),
             receiver_identity_key: BASE64.encode(their_identity_key),
-            ephemeral_key: BASE64.encode(ephemeral_key.public_bytes()),
+            ephemeral_key: BASE64.encode(our_identity_key.public_bytes()),
             ciphertext: BASE64.encode(&nonce_and_ciphertext),
             mac: BASE64.encode(mac_result.into_bytes()),
         })
@@ -344,10 +344,11 @@ impl SessionManager {
         username: &str,
         encrypted_msg: &EncryptedMessage,
         our_identity_key: &KeyPair,
+        advance_ratchet: bool,
     ) -> Result<String> {
-        // If no session exists, try to establish one from the encrypted message
+        // Session must already exist - caller should establish it first
         if !self.has_session(username) {
-            self.establish_session_from_message(username, encrypted_msg, our_identity_key)?;
+            return Err(anyhow!("No session exists for {}. Establish a session first.", username));
         }
 
         // Extract data needed before getting mutable borrow
@@ -396,13 +397,15 @@ impl SessionManager {
             .decrypt(nonce, ciphertext)
             .map_err(|e| anyhow!("Decryption failed: {}", e))?;
 
-        // Advance chain key and update session
-        let new_chain_key = Self::advance_chain_key_static(&chain_key)?;
-        let session = self.sessions.get_mut(username).unwrap();
-        session.session_keys.chain_key = BASE64.encode(&new_chain_key);
-        session.session_keys.message_number += 1;
-
-        self.save_sessions()?;
+        // Only advance chain key and update session if requested
+        // This allows viewing old messages without breaking the ratchet
+        if advance_ratchet {
+            let new_chain_key = Self::advance_chain_key_static(&chain_key)?;
+            let session = self.sessions.get_mut(username).unwrap();
+            session.session_keys.chain_key = BASE64.encode(&new_chain_key);
+            session.session_keys.message_number += 1;
+            self.save_sessions()?;
+        }
 
         String::from_utf8(plaintext).map_err(|e| anyhow!("Invalid UTF-8: {}", e))
     }

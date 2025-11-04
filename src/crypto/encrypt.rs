@@ -3,10 +3,12 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 
 use super::keys::{KeyBundle, KeyManager, KeyPair};
 use super::session::{EncryptedMessage, SessionManager};
+use super::message_cache::MessageCache;
 
 pub struct EncryptionManager {
     key_manager: KeyManager,
     session_manager: SessionManager,
+    message_cache: MessageCache,
 }
 
 impl EncryptionManager {
@@ -16,6 +18,7 @@ impl EncryptionManager {
         Ok(Self {
             key_manager: KeyManager::new()?,
             session_manager: SessionManager::new()?,
+            message_cache: MessageCache::new()?,
         })
     }
 
@@ -25,6 +28,7 @@ impl EncryptionManager {
         Ok(Self {
             key_manager: KeyManager::for_account(account_username)?,
             session_manager: SessionManager::for_account(account_username)?,
+            message_cache: MessageCache::for_account(account_username)?,
         })
     }
 
@@ -91,7 +95,7 @@ impl EncryptionManager {
         password: &str,
         message: &str,
         their_identity_key: &str,
-    ) -> Result<String> {
+    ) -> Result<(String, String)> {
         let our_identity_key = self.key_manager.load_identity_key(password)?;
         let their_identity_key_bytes = BASE64.decode(their_identity_key)?;
 
@@ -104,7 +108,10 @@ impl EncryptionManager {
 
         // Serialize to JSON
         let json = serde_json::to_string(&encrypted_msg)?;
-        Ok(BASE64.encode(json.as_bytes()))
+        let encrypted = BASE64.encode(json.as_bytes());
+
+        // Return both encrypted message and plaintext for caching
+        Ok((encrypted, message.to_string()))
     }
 
     pub fn decrypt_message(
@@ -112,7 +119,14 @@ impl EncryptionManager {
         username: &str,
         password: &str,
         encrypted_message: &str,
+        message_id: i64,
+        advance_ratchet: bool,
     ) -> Result<String> {
+        // Check cache first
+        if let Some(cached) = self.message_cache.get_cached_message(message_id, password) {
+            return Ok(cached);
+        }
+
         let our_identity_key = self.key_manager.load_identity_key(password)?;
 
         // Deserialize from base64-encoded JSON
@@ -120,8 +134,28 @@ impl EncryptionManager {
         let json_str = std::str::from_utf8(&json_bytes)?;
         let encrypted_msg: EncryptedMessage = serde_json::from_str(json_str)?;
 
-        self.session_manager
-            .decrypt_message(username, &encrypted_msg, &our_identity_key)
+        let plaintext = self.session_manager
+            .decrypt_message(username, &encrypted_msg, &our_identity_key, advance_ratchet)?;
+
+        // Cache the decrypted message
+        if let Err(e) = self.message_cache.cache_message(message_id, &plaintext, password) {
+            // Log but don't fail if caching fails
+            eprintln!("Warning: Failed to cache message {}: {}", message_id, e);
+        }
+
+        Ok(plaintext)
+    }
+
+    pub fn cache_sent_message(&mut self, message_id: i64, plaintext: &str, password: &str) -> Result<()> {
+        self.message_cache.cache_message(message_id, plaintext, password)
+    }
+
+    pub fn has_cached_message(&self, message_id: i64) -> bool {
+        self.message_cache.has_message(message_id)
+    }
+
+    pub fn get_cached_message(&self, message_id: i64, password: &str) -> Option<String> {
+        self.message_cache.get_cached_message(message_id, password)
     }
 
     pub fn verify_contact_key(
@@ -168,5 +202,37 @@ impl EncryptionManager {
 
     pub fn list_sessions(&self) -> Vec<String> {
         self.session_manager.list_sessions()
+    }
+
+    pub fn establish_session_from_message(
+        &mut self,
+        username: &str,
+        encrypted_message: &str,
+        password: &str,
+    ) -> Result<()> {
+        let our_identity_key = self.key_manager.load_identity_key(password)?;
+        let our_signed_prekey = self.key_manager.load_signed_prekey(password)?;
+
+        // Deserialize the encrypted message
+        let json_bytes = BASE64.decode(encrypted_message)?;
+        let json_str = std::str::from_utf8(&json_bytes)?;
+        let encrypted_msg: EncryptedMessage = serde_json::from_str(json_str)?;
+
+        self.session_manager.establish_session_from_message(
+            username,
+            &encrypted_msg,
+            &our_identity_key,
+            &our_signed_prekey,
+        )
+    }
+
+    pub fn clear_message_cache(&mut self) -> Result<()> {
+        self.message_cache.clear_cache()
+    }
+
+    pub fn get_cache_stats(&self) -> Result<(usize, u64)> {
+        let count = self.message_cache.get_cache_size();
+        let bytes = self.message_cache.get_cache_size_bytes()?;
+        Ok((count, bytes))
     }
 }

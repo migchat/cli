@@ -8,28 +8,25 @@ $REPO = "migchat/cli"
 $BINARY_NAME = "migchat"
 $INSTALL_DIR = "$env:LOCALAPPDATA\migchat\bin"
 
-# Colors - Safe for piped execution
-function Write-ColorOutput($ForegroundColor) {
-    try {
-        if ($host.UI.SupportsVirtualTerminal -or $host.Name -eq "ConsoleHost") {
-            $fc = $host.UI.RawUI.ForegroundColor
-            $host.UI.RawUI.ForegroundColor = $ForegroundColor
-            if ($args) {
-                Write-Output $args
-            }
-            $host.UI.RawUI.ForegroundColor = $fc
-        } else {
-            # Fallback for piped execution
-            if ($args) {
-                Write-Output $args
-            }
-        }
-    } catch {
-        # Fallback if color output fails
-        if ($args) {
-            Write-Output $args
-        }
-    }
+# Simple output function that works in all contexts
+function Write-Info {
+    param([string]$Message)
+    Write-Host $Message
+}
+
+function Write-Success {
+    param([string]$Message)
+    Write-Host $Message -ForegroundColor Green
+}
+
+function Write-Warning {
+    param([string]$Message)
+    Write-Host $Message -ForegroundColor Yellow
+}
+
+function Write-Error {
+    param([string]$Message)
+    Write-Host $Message -ForegroundColor Red
 }
 
 # Detect architecture
@@ -39,7 +36,7 @@ function Get-Architecture {
         "AMD64" { return "x86_64" }
         "ARM64" { return "aarch64" }
         default {
-            Write-ColorOutput Red "Unsupported architecture: $arch"
+            Write-Error "Unsupported architecture: $arch"
             exit 1
         }
     }
@@ -47,21 +44,21 @@ function Get-Architecture {
 
 # Get latest version from GitHub
 function Get-LatestVersion {
-    Write-ColorOutput Cyan "Fetching latest version..."
+    Write-Info "Fetching latest version..."
 
     try {
-        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/releases/latest"
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/releases/latest" -UseBasicParsing
         $version = $release.tag_name
 
         if ([string]::IsNullOrEmpty($version)) {
             throw "Failed to fetch latest version"
         }
 
-        Write-ColorOutput Green "Latest version: $version"
+        Write-Success "Latest version: $version"
         return $version
     }
     catch {
-        Write-ColorOutput Red "Failed to fetch latest version: $_"
+        Write-Error "Failed to fetch latest version: $_"
         exit 1
     }
 }
@@ -77,7 +74,7 @@ function Install-Binary {
     $downloadUrl = "https://github.com/$REPO/releases/download/$Version/$BINARY_NAME-$platform.exe"
     $exePath = "$INSTALL_DIR\$BINARY_NAME.exe"
 
-    Write-ColorOutput Cyan "Downloading $BINARY_NAME for $platform..."
+    Write-Info "Downloading $BINARY_NAME for $platform..."
 
     try {
         # Create install directory
@@ -88,11 +85,11 @@ function Install-Binary {
         # Download binary
         Invoke-WebRequest -Uri $downloadUrl -OutFile $exePath -UseBasicParsing
 
-        Write-ColorOutput Green "✓ Successfully installed $BINARY_NAME to $exePath"
+        Write-Success "Successfully installed $BINARY_NAME to $exePath"
     }
     catch {
-        Write-ColorOutput Red "✗ Failed to download binary: $_"
-        Write-ColorOutput Yellow "URL attempted: $downloadUrl"
+        Write-Error "Failed to download binary: $_"
+        Write-Warning "URL attempted: $downloadUrl"
         exit 1
     }
 }
@@ -102,8 +99,8 @@ function Add-ToPath {
     $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
 
     if ($currentPath -notlike "*$INSTALL_DIR*") {
-        Write-ColorOutput Yellow ""
-        Write-ColorOutput Yellow "⚠ Adding $INSTALL_DIR to your PATH..."
+        Write-Info ""
+        Write-Warning "Adding $INSTALL_DIR to your PATH..."
 
         try {
             [Environment]::SetEnvironmentVariable(
@@ -115,42 +112,42 @@ function Add-ToPath {
             # Update PATH for current session
             $env:Path = "$env:Path;$INSTALL_DIR"
 
-            Write-ColorOutput Green "✓ Added to PATH successfully"
-            Write-ColorOutput Yellow ""
-            Write-ColorOutput Yellow "Note: You may need to restart your terminal for PATH changes to take effect"
+            Write-Success "Added to PATH successfully"
+            Write-Info ""
+            Write-Warning "Note: You may need to restart your terminal for PATH changes to take effect"
         }
         catch {
-            Write-ColorOutput Red "Failed to update PATH: $_"
-            Write-ColorOutput Yellow ""
-            Write-ColorOutput Yellow "Please manually add $INSTALL_DIR to your PATH:"
-            Write-ColorOutput Yellow "1. Open System Properties > Environment Variables"
-            Write-ColorOutput Yellow "2. Edit your user PATH variable"
-            Write-ColorOutput Yellow "3. Add: $INSTALL_DIR"
+            Write-Error "Failed to update PATH: $_"
+            Write-Info ""
+            Write-Warning "Please manually add $INSTALL_DIR to your PATH:"
+            Write-Warning "1. Open System Properties > Environment Variables"
+            Write-Warning "2. Edit your user PATH variable"
+            Write-Warning "3. Add: $INSTALL_DIR"
         }
     }
 }
 
 # Main installation
 function Main {
-    Write-ColorOutput Cyan "╔═══════════════════════════════════╗"
-    Write-ColorOutput Cyan "║     MigChat CLI Installer        ║"
-    Write-ColorOutput Cyan "╚═══════════════════════════════════╝"
-    Write-Output ""
+    Write-Info "======================================="
+    Write-Info "      MigChat CLI Installer"
+    Write-Info "======================================="
+    Write-Info ""
 
     $arch = Get-Architecture
-    Write-ColorOutput Cyan "Detected architecture: $arch"
+    Write-Info "Detected architecture: $arch"
 
     $version = Get-LatestVersion
     Install-Binary -Version $version -Arch $arch
     Add-ToPath
 
-    Write-Output ""
-    Write-ColorOutput Green "╔═══════════════════════════════════╗"
-    Write-ColorOutput Green "║   Installation Complete! 🎉       ║"
-    Write-ColorOutput Green "╚═══════════════════════════════════╝"
-    Write-Output ""
-    Write-ColorOutput Cyan "Run '$BINARY_NAME' to get started"
-    Write-Output ""
+    Write-Info ""
+    Write-Success "======================================="
+    Write-Success "   Installation Complete!"
+    Write-Success "======================================="
+    Write-Info ""
+    Write-Info "Run '$BINARY_NAME' to get started"
+    Write-Info ""
 }
 
 # Run installation
@@ -158,6 +155,8 @@ try {
     Main
 }
 catch {
-    Write-ColorOutput Red "Installation failed: $_"
+    Write-Error "Installation failed: $_"
+    Write-Error "Error details: $($_.Exception.Message)"
+    Write-Error "Stack trace: $($_.ScriptStackTrace)"
     exit 1
 }

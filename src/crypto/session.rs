@@ -69,6 +69,24 @@ impl SessionManager {
         Ok(manager)
     }
 
+    pub fn for_account(account_username: &str) -> Result<Self> {
+        let sessions_dir = dirs::config_dir()
+            .ok_or_else(|| anyhow!("Could not determine config directory"))?
+            .join("migchat")
+            .join("sessions")
+            .join(account_username);
+
+        fs::create_dir_all(&sessions_dir)?;
+
+        let mut manager = Self {
+            sessions_dir,
+            sessions: HashMap::new(),
+        };
+
+        manager.load_sessions()?;
+        Ok(manager)
+    }
+
     fn get_sessions_path(&self) -> PathBuf {
         self.sessions_dir.join(SESSIONS_FILE)
     }

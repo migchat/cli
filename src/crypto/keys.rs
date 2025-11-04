@@ -130,6 +130,18 @@ impl KeyManager {
         Ok(Self { keys_dir })
     }
 
+    pub fn for_account(account_username: &str) -> Result<Self> {
+        let keys_dir = dirs::config_dir()
+            .ok_or_else(|| anyhow!("Could not determine config directory"))?
+            .join("migchat")
+            .join("keys")
+            .join(account_username);
+
+        fs::create_dir_all(&keys_dir)?;
+
+        Ok(Self { keys_dir })
+    }
+
     fn get_key_path(&self, filename: &str) -> PathBuf {
         self.keys_dir.join(filename)
     }

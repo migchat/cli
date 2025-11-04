@@ -420,7 +420,7 @@ impl UI {
 
         println!("\n{}", "🔐 Encrypting message...".yellow());
 
-        let token = self.config.get_current_token().unwrap();
+        let token = self.config.get_current_token().unwrap().clone();
         let password = match &self.current_password {
             Some(p) => p.clone(),
             None => {
@@ -574,7 +574,7 @@ impl UI {
 
         println!("\n{}", "Updating username...".yellow());
 
-        let token = self.config.get_current_token().unwrap();
+        let token = self.config.get_current_token().unwrap().clone();
 
         match self.api.update_username(token, new_username.clone()) {
             Ok(response) => {
@@ -605,7 +605,7 @@ impl UI {
     }
 
     fn view_conversations(&mut self) -> Result<bool> {
-        let token = self.config.get_current_token().unwrap();
+        let token = self.config.get_current_token().unwrap().clone();
 
         println!("\n{}", "Loading conversations...".yellow());
 
@@ -662,7 +662,7 @@ impl UI {
     }
 
     fn view_conversation_messages(&mut self, username: &str) -> Result<bool> {
-        let token = self.config.get_current_token().unwrap();
+        let token = self.config.get_current_token().unwrap().clone();
         let current_user = self.config.get_current_username().unwrap().clone();
 
         println!("\n{}", "Loading messages...".yellow());
@@ -788,9 +788,9 @@ impl UI {
                 &msg.from_username
             };
 
-            match self.ensure_encryption_mut()?.decrypt_message(sender, password, &msg.content) {
-                Ok(plaintext) => plaintext,
-                Err(_) => {
+            match self.ensure_encryption_mut().ok().and_then(|enc| enc.decrypt_message(sender, password, &msg.content).ok()) {
+                Some(plaintext) => plaintext,
+                None => {
                     // If decryption fails, assume it's a plaintext message (backwards compatibility)
                     msg.content.clone()
                 }
@@ -870,7 +870,7 @@ impl UI {
             return Ok(true);
         }
 
-        let token = self.config.get_current_token().unwrap();
+        let token = self.config.get_current_token().unwrap().clone();
 
         println!("\n{}", "Fetching contact's public key...".yellow());
 

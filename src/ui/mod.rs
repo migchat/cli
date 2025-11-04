@@ -515,10 +515,10 @@ impl UI {
         }
 
         // Encrypt the message
-        let encrypted_content = match self.api.get_keys(&token, &to_username) {
+        let (encrypted_content, plaintext) = match self.api.get_keys(&token, &to_username) {
             Ok(response) => {
                 match self.ensure_encryption_mut()?.encrypt_message(&to_username, &password, &content, &response.key_bundle.identity_key) {
-                    Ok(encrypted) => encrypted,
+                    Ok((encrypted, plain)) => (encrypted, plain),
                     Err(e) => {
                         println!("{}", format!("✗ Encryption failed: {}", e).red());
                         println!();
@@ -538,7 +538,14 @@ impl UI {
         println!("{}", "📤 Sending encrypted message...".yellow());
 
         match self.api.send_message(&token, to_username.clone(), encrypted_content) {
-            Ok(_) => {
+            Ok(response) => {
+                // Cache the sent message plaintext so we can view it later
+                if let Ok(enc) = self.ensure_encryption_mut() {
+                    if let Err(e) = enc.cache_sent_message(response.message_id, &plaintext, &password) {
+                        eprintln!("Warning: Failed to cache sent message: {}", e);
+                    }
+                }
+
                 println!("{}", format!("✓ Encrypted message sent to {}! 🔒", to_username).green().bold());
                 println!();
                 self.wait_for_enter();
@@ -794,38 +801,41 @@ impl UI {
             );
         }
 
-        // Try to decrypt the message (only for received messages)
-        let decrypted_content = if msg.from_username == current_user {
-            // This is a message we sent - we can't decrypt it because we don't have the plaintext
-            // and the ratchet has advanced. Show it as encrypted.
-            if msg.content.len() > 100 && msg.content.chars().all(|c| c.is_alphanumeric() || c == '+' || c == '/' || c == '=') {
-                "[Your encrypted message]".to_string()
-            } else {
-                // Backwards compatibility for old unencrypted messages
-                msg.content.clone()
-            }
-        } else if let Ok(password) = self.ensure_password() {
-            // This is a received message - try to decrypt it
-            let sender = &msg.from_username;
-
-            // Try to decrypt - if encryption manager exists
+        // Try to get or decrypt the message
+        let decrypted_content = if let Ok(password) = self.ensure_password() {
             if let Ok(enc) = self.ensure_encryption_mut() {
-                match enc.decrypt_message(sender, &password, &msg.content) {
-                    Ok(plaintext) => plaintext,
-                    Err(e) => {
-                        // Decryption failed - might be plaintext (backwards compatibility)
-                        // Try to decode base64 to check if it's encrypted
-                        if msg.content.len() > 100 && msg.content.chars().all(|c| c.is_alphanumeric() || c == '+' || c == '/' || c == '=') {
-                            // Looks like encrypted content that failed to decrypt
-                            format!("[Encrypted message - decryption failed: {}]", e)
-                        } else {
-                            // Probably plaintext
-                            msg.content.clone()
+                // Check if it's encrypted (long base64 string)
+                let is_encrypted = msg.content.len() > 100 &&
+                    msg.content.chars().all(|c| c.is_alphanumeric() || c == '+' || c == '/' || c == '=');
+
+                if is_encrypted {
+                    // Check cache first
+                    if let Some(cached) = enc.get_cached_message(msg.id, &password) {
+                        cached
+                    } else if msg.from_username == current_user {
+                        // Sent message not in cache - can't decrypt
+                        "[Your encrypted message - not cached]".to_string()
+                    } else {
+                        // Received message - try to decrypt (don't advance ratchet for viewing)
+                        let sender = &msg.from_username;
+
+                        // Try to establish session if needed
+                        if !enc.has_session(sender) {
+                            if let Err(e) = enc.establish_session_from_message(sender, &msg.content, &password) {
+                                return println!("  [Could not establish session: {}]", e);
+                            }
+                        }
+
+                        match enc.decrypt_message(sender, &password, &msg.content, msg.id, false) {
+                            Ok(plaintext) => plaintext,
+                            Err(e) => format!("[Encrypted message - decryption failed: {}]", e)
                         }
                     }
+                } else {
+                    // Not encrypted (backwards compatibility)
+                    msg.content.clone()
                 }
             } else {
-                // No encryption manager - show plaintext
                 msg.content.clone()
             }
         } else {
@@ -846,6 +856,8 @@ impl UI {
             "Verify Contact",
             "Export Key Backup",
             "Import Key Backup",
+            "View Cache Status",
+            "Clear Message Cache",
             "← Back",
         ];
 
@@ -860,7 +872,9 @@ impl UI {
             1 => self.verify_contact(),
             2 => self.export_backup(),
             3 => self.import_backup(),
-            4 => Ok(true),
+            4 => self.view_cache_status(),
+            5 => self.clear_cache(),
+            6 => Ok(true),
             _ => Ok(true),
         }
     }
@@ -1095,5 +1109,77 @@ impl UI {
                 Ok(true)
             }
         }
+    }
+
+    fn view_cache_status(&self) -> Result<bool> {
+        self.clear_screen();
+        println!("{}", "═══ Message Cache Status ═══".cyan().bold());
+        println!();
+
+        match self.ensure_encryption() {
+            Ok(enc) => {
+                match enc.get_cache_stats() {
+                    Ok((count, bytes)) => {
+                        println!("{}", format!("Cached messages: {}", count).bright_white());
+                        println!("{}", format!("Cache size: {} bytes ({:.2} KB)", bytes, bytes as f64 / 1024.0).bright_white());
+                        println!();
+                        println!("{}", "The message cache stores decrypted messages locally so you can".yellow());
+                        println!("{}", "view your conversation history without issues.".yellow());
+                    }
+                    Err(e) => {
+                        println!("{}", format!("✗ Failed to get cache stats: {}", e).red());
+                    }
+                }
+            }
+            Err(e) => {
+                println!("{}", format!("✗ Encryption not initialized: {}", e).red());
+            }
+        }
+
+        println!();
+        self.wait_for_enter();
+        Ok(true)
+    }
+
+    fn clear_cache(&mut self) -> Result<bool> {
+        self.clear_screen();
+        println!("{}", "═══ Clear Message Cache ═══".cyan().bold());
+        println!();
+        println!("{}", "⚠ This will clear all cached decrypted messages.".yellow());
+        println!("{}", "You may need to re-decrypt messages when viewing conversations.".yellow());
+        println!();
+
+        let confirm = Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt("Are you sure you want to clear the cache?")
+            .default(false)
+            .interact()?;
+
+        if confirm {
+            match self.ensure_encryption_mut() {
+                Ok(enc) => {
+                    match enc.clear_message_cache() {
+                        Ok(_) => {
+                            println!();
+                            println!("{}", "✓ Message cache cleared successfully!".green());
+                        }
+                        Err(e) => {
+                            println!();
+                            println!("{}", format!("✗ Failed to clear cache: {}", e).red());
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!();
+                    println!("{}", format!("✗ Encryption not initialized: {}", e).red());
+                }
+            }
+        } else {
+            println!();
+            println!("{}", "✗ Cache clearing cancelled".yellow());
+        }
+
+        println!();
+        self.wait_for_enter();
+        Ok(true)
     }
 }

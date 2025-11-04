@@ -191,6 +191,69 @@ impl SessionManager {
         self.sessions.contains_key(username)
     }
 
+    // Establish a session as the receiver from an incoming message
+    fn establish_session_from_message(
+        &mut self,
+        username: &str,
+        encrypted_msg: &EncryptedMessage,
+        our_identity_key: &KeyPair,
+    ) -> Result<()> {
+        // Decode keys from the message
+        let their_identity_key_bytes = BASE64.decode(&encrypted_msg.sender_identity_key)?;
+        let their_ephemeral_key_bytes = BASE64.decode(&encrypted_msg.ephemeral_key)?;
+
+        let their_identity_pub = PublicKey::from(*array_ref::array_ref![&their_identity_key_bytes, 0, 32]);
+        let their_ephemeral_pub = PublicKey::from(*array_ref::array_ref![&their_ephemeral_key_bytes, 0, 32]);
+
+        // Load our signed prekey (we need this for the receiver side)
+        // For now, we'll use our identity key as the signed prekey
+        // TODO: This needs to match the actual signed prekey that was uploaded to the server
+
+        // Receiver's X3DH key agreement (reverse of sender's)
+        // DH1 = DH(SPK_B, IK_A) = DH(IK_A, SPK_B) [symmetric]
+        let dh1 = our_identity_key.secret.diffie_hellman(&their_identity_pub);
+
+        // DH2 = DH(IK_B, EK_A) = DH(EK_A, IK_B) [symmetric]
+        let dh2 = our_identity_key.secret.diffie_hellman(&their_ephemeral_pub);
+
+        // DH3 = DH(SPK_B, EK_A) = DH(EK_A, SPK_B) [symmetric]
+        let dh3 = our_identity_key.secret.diffie_hellman(&their_ephemeral_pub);
+
+        // Combine DH outputs (same order as sender)
+        let mut shared_secret = Vec::new();
+        shared_secret.extend_from_slice(dh1.as_bytes());
+        shared_secret.extend_from_slice(dh2.as_bytes());
+        shared_secret.extend_from_slice(dh3.as_bytes());
+
+        // Derive root and chain keys using HKDF (same as sender)
+        let hkdf = Hkdf::<Sha256>::new(None, &shared_secret);
+        let mut root_key = Zeroizing::new([0u8; 32]);
+        let mut chain_key = Zeroizing::new([0u8; 32]);
+
+        hkdf.expand(b"MigChat-RootKey", &mut *root_key)
+            .map_err(|e| anyhow!("HKDF expand failed: {}", e))?;
+        hkdf.expand(b"MigChat-ChainKey", &mut *chain_key)
+            .map_err(|e| anyhow!("HKDF expand failed: {}", e))?;
+
+        // Create session
+        let session = Session {
+            username: username.to_string(),
+            identity_key: BASE64.encode(&their_identity_key_bytes),
+            session_keys: SessionKeys {
+                root_key: BASE64.encode(&*root_key),
+                chain_key: BASE64.encode(&*chain_key),
+                message_number: 0,
+                previous_counter: 0,
+            },
+            created_at: chrono::Utc::now().timestamp(),
+        };
+
+        self.sessions.insert(username.to_string(), session);
+        self.save_sessions()?;
+
+        Ok(())
+    }
+
     fn derive_message_key_static(chain_key: &[u8], message_number: u32) -> Result<Zeroizing<Vec<u8>>> {
         let mut mac = <Hmac::<Sha256> as HmacMac>::new_from_slice(chain_key)
             .map_err(|e| anyhow!("HMAC creation failed: {}", e))?;
@@ -282,6 +345,11 @@ impl SessionManager {
         encrypted_msg: &EncryptedMessage,
         our_identity_key: &KeyPair,
     ) -> Result<String> {
+        // If no session exists, try to establish one from the encrypted message
+        if !self.has_session(username) {
+            self.establish_session_from_message(username, encrypted_msg, our_identity_key)?;
+        }
+
         // Extract data needed before getting mutable borrow
         let (chain_key_str, message_number) = {
             let session = self

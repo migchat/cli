@@ -858,6 +858,7 @@ impl UI {
             "Import Key Backup",
             "View Cache Status",
             "Clear Message Cache",
+            "Reset Session with Contact",
             "← Back",
         ];
 
@@ -874,7 +875,8 @@ impl UI {
             3 => self.import_backup(),
             4 => self.view_cache_status(),
             5 => self.clear_cache(),
-            6 => Ok(true),
+            6 => self.reset_session(),
+            7 => Ok(true),
             _ => Ok(true),
         }
     }
@@ -1176,6 +1178,104 @@ impl UI {
         } else {
             println!();
             println!("{}", "✗ Cache clearing cancelled".yellow());
+        }
+
+        println!();
+        self.wait_for_enter();
+        Ok(true)
+    }
+
+    fn reset_session(&mut self) -> Result<bool> {
+        self.clear_screen();
+        println!("{}", "═══ Reset Session with Contact ═══".cyan().bold());
+        println!();
+        println!("{}", "This will delete the encryption session with a contact and re-establish".yellow());
+        println!("{}", "it from scratch. Use this if you're getting decryption errors.".yellow());
+        println!();
+        println!("{}", "⚠ Note: Old messages encrypted with the old session will not be recoverable.".red());
+        println!();
+
+        let username: String = Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("Contact username")
+            .allow_empty(true)
+            .interact_text()?;
+
+        if username.is_empty() {
+            return Ok(true);
+        }
+
+        let password = match &self.current_password {
+            Some(p) => p.clone(),
+            None => {
+                println!("{}", "✗ Password required".red());
+                println!();
+                self.wait_for_enter();
+                return Ok(true);
+            }
+        };
+
+        println!();
+        let confirm = Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt(format!("Reset session with {}?", username))
+            .default(false)
+            .interact()?;
+
+        if !confirm {
+            println!();
+            println!("{}", "✗ Session reset cancelled".yellow());
+            println!();
+            self.wait_for_enter();
+            return Ok(true);
+        }
+
+        match self.ensure_encryption_mut() {
+            Ok(enc) => {
+                // Delete the old session
+                if let Err(e) = enc.delete_session(&username) {
+                    println!();
+                    println!("{}", format!("✗ Failed to delete session: {}", e).red());
+                    println!();
+                    self.wait_for_enter();
+                    return Ok(true);
+                }
+
+                println!();
+                println!("{}", "✓ Old session deleted".green());
+                println!("{}", "🔑 Establishing new session...".yellow());
+
+                // Fetch the contact's keys and establish a new session
+                let token = self.config.get_current_token().unwrap().clone();
+                match self.api.get_keys(&token, &username) {
+                    Ok(response) => {
+                        let crypto_key_bundle = crate::crypto::keys::KeyBundle {
+                            identity_key: response.key_bundle.identity_key.clone(),
+                            signed_prekey: response.key_bundle.signed_prekey.clone(),
+                            signed_prekey_signature: response.key_bundle.signed_prekey_signature.clone(),
+                            one_time_prekeys: response.key_bundle.one_time_prekeys.clone(),
+                        };
+
+                        if let Err(e) = enc.establish_session_with_bundle(&username, &password, &crypto_key_bundle) {
+                            println!("{}", format!("✗ Failed to establish new session: {}", e).red());
+                            println!();
+                            self.wait_for_enter();
+                            return Ok(true);
+                        }
+
+                        println!("{}", "✓ New session established successfully!".green());
+                        println!();
+                        println!("{}", format!("You can now send and receive encrypted messages with {}", username).bright_white());
+                        println!("{}", "Note: You won't be able to decrypt old messages from before the reset.".yellow());
+                    }
+                    Err(e) => {
+                        println!("{}", format!("✗ Failed to get contact's keys: {}", e).red());
+                        println!("{}", "Session deleted but could not re-establish. Try sending a new message.".yellow());
+                    }
+                }
+            }
+            Err(e) => {
+                println!();
+                println!("{}", format!("✗ Encryption not initialized: {}", e).red());
+            }
         }
 
         println!();

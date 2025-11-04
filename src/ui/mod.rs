@@ -51,6 +51,20 @@ impl UI {
             .ok_or_else(|| anyhow!("Encryption manager not initialized"))
     }
 
+    fn ensure_password(&mut self) -> Result<String> {
+        if let Some(password) = &self.current_password {
+            return Ok(password.clone());
+        }
+
+        // Prompt for password
+        let password: String = Password::with_theme(&ColorfulTheme::default())
+            .with_prompt("Enter password for decryption")
+            .interact()?;
+
+        self.current_password = Some(password.clone());
+        Ok(password)
+    }
+
     fn start_polling(&mut self) {
         if self.config.is_logged_in() {
             let poller = MessagePoller::new();
@@ -781,19 +795,32 @@ impl UI {
         }
 
         // Try to decrypt the message
-        let decrypted_content = if let Some(password) = self.current_password.clone() {
+        let decrypted_content = if let Ok(password) = self.ensure_password() {
             let sender = if &msg.from_username == current_user {
                 &msg.to_username
             } else {
                 &msg.from_username
             };
 
-            match self.ensure_encryption_mut().ok().and_then(|enc| enc.decrypt_message(sender, &password, &msg.content).ok()) {
-                Some(plaintext) => plaintext,
-                None => {
-                    // If decryption fails, assume it's a plaintext message (backwards compatibility)
-                    msg.content.clone()
+            // Try to decrypt - if encryption manager exists
+            if let Ok(enc) = self.ensure_encryption_mut() {
+                match enc.decrypt_message(sender, &password, &msg.content) {
+                    Ok(plaintext) => plaintext,
+                    Err(e) => {
+                        // Decryption failed - might be plaintext (backwards compatibility)
+                        // Try to decode base64 to check if it's encrypted
+                        if msg.content.len() > 100 && msg.content.chars().all(|c| c.is_alphanumeric() || c == '+' || c == '/' || c == '=') {
+                            // Looks like encrypted content that failed to decrypt
+                            format!("[Encrypted message - decryption failed: {}]", e)
+                        } else {
+                            // Probably plaintext
+                            msg.content.clone()
+                        }
+                    }
                 }
+            } else {
+                // No encryption manager - show plaintext
+                msg.content.clone()
             }
         } else {
             msg.content.clone()

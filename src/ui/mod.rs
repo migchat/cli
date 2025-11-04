@@ -778,7 +778,7 @@ impl UI {
         let time_str = time.format("%Y-%m-%d %H:%M:%S").to_string();
         let current_user = self.config.get_current_username().unwrap().clone();
 
-        if &msg.from_username == current_user {
+        if msg.from_username == current_user {
             // Sent message
             println!("{} {} → {}",
                 time_str.bright_black(),
@@ -796,7 +796,7 @@ impl UI {
 
         // Try to decrypt the message
         let decrypted_content = if let Ok(password) = self.ensure_password() {
-            let sender = if &msg.from_username == current_user {
+            let sender = if msg.from_username == current_user {
                 &msg.to_username
             } else {
                 &msg.from_username

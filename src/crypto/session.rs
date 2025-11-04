@@ -242,13 +242,18 @@ impl SessionManager {
             .encrypt(nonce, plaintext)
             .map_err(|e| anyhow!("Encryption failed: {}", e))?;
 
+        // Prepend nonce to ciphertext
+        let mut nonce_and_ciphertext = Vec::with_capacity(12 + ciphertext.len());
+        nonce_and_ciphertext.extend_from_slice(&nonce_bytes);
+        nonce_and_ciphertext.extend_from_slice(&ciphertext);
+
         // Generate ephemeral key for this message
         let ephemeral_key = KeyPair::generate();
 
-        // Create MAC
+        // Create MAC over nonce + ciphertext
         let mut mac = <Hmac::<Sha256> as HmacMac>::new_from_slice(&message_key[..32])
             .map_err(|e| anyhow!("HMAC creation failed: {}", e))?;
-        mac.update(&ciphertext);
+        mac.update(&nonce_and_ciphertext);
         mac.update(our_identity_key.public_bytes().as_slice());
         mac.update(their_identity_key);
         let mac_result = mac.finalize();
@@ -266,7 +271,7 @@ impl SessionManager {
             sender_identity_key: BASE64.encode(our_identity_key.public_bytes()),
             receiver_identity_key: BASE64.encode(their_identity_key),
             ephemeral_key: BASE64.encode(ephemeral_key.public_bytes()),
-            ciphertext: BASE64.encode(&ciphertext),
+            ciphertext: BASE64.encode(&nonce_and_ciphertext),
             mac: BASE64.encode(mac_result.into_bytes()),
         })
     }
@@ -286,8 +291,12 @@ impl SessionManager {
             (session.session_keys.chain_key.clone(), session.session_keys.message_number)
         };
 
-        // Verify MAC
-        let ciphertext = BASE64.decode(&encrypted_msg.ciphertext)?;
+        // Decode the nonce + ciphertext
+        let nonce_and_ciphertext = BASE64.decode(&encrypted_msg.ciphertext)?;
+        if nonce_and_ciphertext.len() < 12 {
+            return Err(anyhow!("Invalid ciphertext: too short"));
+        }
+
         let sender_identity_key = BASE64.decode(&encrypted_msg.sender_identity_key)?;
         let receiver_identity_key = BASE64.decode(&encrypted_msg.receiver_identity_key)?;
         let mac_bytes = BASE64.decode(&encrypted_msg.mac)?;
@@ -296,27 +305,27 @@ impl SessionManager {
         let chain_key = BASE64.decode(&chain_key_str)?;
         let message_key = Self::derive_message_key_static(&chain_key, message_number)?;
 
-        // Verify MAC
+        // Verify MAC over nonce + ciphertext
         let mut mac = <Hmac::<Sha256> as HmacMac>::new_from_slice(&message_key[..32])
             .map_err(|e| anyhow!("HMAC creation failed: {}", e))?;
-        mac.update(&ciphertext);
+        mac.update(&nonce_and_ciphertext);
         mac.update(&sender_identity_key);
         mac.update(&receiver_identity_key);
 
         mac.verify_slice(&mac_bytes)
             .map_err(|_| anyhow!("MAC verification failed"))?;
 
+        // Extract nonce (first 12 bytes) and ciphertext (rest)
+        let nonce_bytes = &nonce_and_ciphertext[..12];
+        let ciphertext = &nonce_and_ciphertext[12..];
+        let nonce = Nonce::from_slice(nonce_bytes);
+
         // Decrypt message
         let cipher = ChaCha20Poly1305::new_from_slice(&message_key[..32])
             .map_err(|e| anyhow!("Failed to create cipher: {}", e))?;
 
-        // Extract nonce from ciphertext (first 12 bytes embedded by encrypt)
-        // Note: ChaCha20Poly1305 AEAD includes the nonce in different ways depending on implementation
-        // For simplicity, we'll use a zero nonce here and rely on unique message keys
-        let nonce = Nonce::from_slice(&[0u8; 12]);
-
         let plaintext = cipher
-            .decrypt(nonce, ciphertext.as_slice())
+            .decrypt(nonce, ciphertext)
             .map_err(|e| anyhow!("Decryption failed: {}", e))?;
 
         // Advance chain key and update session

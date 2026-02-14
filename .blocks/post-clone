@@ -1,0 +1,6 @@
+#!/bin/bash
+set -e
+
+echo "Post-clone script starting..."
+echo "ERROR: This post-clone script is configured to fail!" >&2
+exit 1

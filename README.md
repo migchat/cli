@@ -89,6 +89,9 @@ cargo run
 # If installed via script or manually
 migchat
 
+# Override server URL at startup
+migchat --server-url http://localhost:3000
+
 # If installed via cargo
 migchat-cli
 
@@ -252,6 +255,16 @@ cargo run
 ```
 
 Then set the server URL to `http://localhost:3000` from the CLI menu.
+
+You can also start directly against a specific server:
+```bash
+migchat --server-url http://localhost:3000
+```
+
+Or set an environment variable:
+```bash
+MIGCHAT_SERVER_URL=http://localhost:3000 migchat
+```
 
 ## Features in Detail
 
